@@ -275,58 +275,120 @@ class FalaiBot:
         log.info(f"URL: {self.driver.current_url[:100]}")
         log.info(f"Titulo: {self.driver.title[:60]}")
 
-        # Salva screenshot pra debug
         try:
             self.driver.save_screenshot("debug_dashboard.png")
-            log.info("Screenshot: debug_dashboard.png")
+            log.info("Screenshot salva: debug_dashboard.png")
         except:
             pass
 
-        # Lista todos os links e botoes visiveis
-        todos = self.driver.find_elements(By.XPATH, "//a | //button | //span[@role='button'] | //div[@role='button']")
-        log.info(f"Total de elementos clicaveis: {len(todos)}")
+        # Loga todo texto visivel da pagina (exceto nav/footer)
+        body = self.driver.find_element(By.TAG_NAME, "body")
+        log.info(f"=== TEXTO DA PAGINA ===")
+        log.info(body.text[:2000].replace("\n", " | "))
+        log.info(f"=== FIM TEXTO ===")
+
+        # Varre TODOS os elementos visiveis que podem ser clicados
+        todos = self.driver.find_elements(By.XPATH, "//*[self::a or self::button or self::span or self::div or self::li or self::td or self::p or self::h1 or self::h2 or self::h3 or self::h4 or self::h5]")
+        log.info(f"Total elementos: {len(todos)}")
+
         candidatos = []
+        ignorar = {"", "home", "sobre", "blog", "minha conta", "cadastre-se", "entrar"}
+
         for el in todos:
             try:
-                if el.is_displayed():
-                    txt = el.text.strip().lower()
-                    href = el.get_attribute("href") or ""
-                    if txt and len(txt) > 1 and txt not in ["", "home", "sobre", "blog", "minha conta"]:
-                        candidatos.append((txt, href, el))
-                        if len(txt) < 30:
-                            log.info(f"  Link: '{txt[:40]}' href='{href[:60]}'")
+                if not el.is_displayed():
+                    continue
+                txt = el.text.strip().lower()
+                if not txt or len(txt) <= 1 or txt in ignorar:
+                    continue
+                # Pega href, onclick, data-* attributes
+                href = el.get_attribute("href") or ""
+                onclick = el.get_attribute("onclick") or ""
+                data_target = el.get_attribute("data-target") or ""
+                classe = el.get_attribute("class") or ""
+                tag = el.tag_name
+                candidatos.append((txt, href, onclick, tag, classe, el))
             except:
                 pass
 
-        # Palavras que indicam pesquisa
-        palavras = ["pesquis", "respond", "particip", "dispon", "iniciar",
-                    "começar", "comecar", "survey", "start", "nova", "abrir",
-                    "acessar", "entrar", "ir para", "painel"]
+        # Palavras que fortemente indicam pesquisa
+        forca = [
+            "pesquis", "respond", "particip", "disponivel", "disponível",
+            "iniciar", "começar", "comecar", "survey", "abrir",
+            "acessar", "nova pesquisa", "ir para", "painel",
+            "opinar", "dar opiniao", "dar opinião"
+        ]
 
-        for txt, href, el in candidatos:
-            if any(p in txt for p in palavras):
-                log.info(f"Clicando em '{txt[:30]}'")
+        log.info(f"Analisando {len(candidatos)} candidatos...")
+        for txt, href, onclick, tag, classe, el in candidatos:
+            if any(p in txt for p in forca):
+                log.info(f"[FORCA] '{txt[:50]}' ({tag} | class={classe[:40]})")
                 try:
-                    el.click()
+                    self.driver.execute_script("arguments[0].scrollIntoView(true); arguments[0].click();", el)
                     self._rand(3, 5)
-                    return True
-                except:
-                    self.driver.execute_script("arguments[0].click();", el)
-                    self._rand(3, 5)
-                    return True
-
-        # Tenta clicar em qualquer link que va para dominio diferente
-        for txt, href, el in candidatos:
-            if href and "falai.com.vc" not in href and href.startswith("http"):
-                log.info(f"Link externo: '{txt[:20]}' -> {href[:60]}")
-                try:
-                    el.click()
-                    self._rand(3, 5)
-                    return True
+                    if self._em_pagina_pesquisa():
+                        return True
                 except:
                     pass
 
+        # Tenta clicar em QUALQUER link externo
+        for txt, href, onclick, tag, classe, el in candidatos:
+            if href and "falai.com.vc" not in href and href.startswith("http"):
+                log.info(f"[EXTERNO] '{txt[:30]}' -> {href[:60]}")
+                try:
+                    self.driver.execute_script("arguments[0].scrollIntoView(true); arguments[0].click();", el)
+                    self._rand(3, 5)
+                    if self._em_pagina_pesquisa():
+                        return True
+                except:
+                    pass
+
+        # Tenta clicar em elementos que parecem cards/sessoes (pai de texto com palavras-chave)
+        for txt, href, onclick, tag, classe, el in candidatos:
+            if any(p in txt for p in ["nova", "nova pesquisa", "dispon", "voce tem", "participar",
+                                       "ganhe", "dinheiro", "pontos", "recompensa", "pontuação",
+                                       "pontuacao", "avaliar", "avaliação", "avaliacao", "votar"]):
+                log.info(f"[CARD] '{txt[:50]}'")
+                try:
+                    self.driver.execute_script("arguments[0].scrollIntoView(true); arguments[0].click();", el)
+                    self._rand(3, 5)
+                    if self._em_pagina_pesquisa():
+                        return True
+                except:
+                    pass
+
+        # Se nao achou nada, tenta clicar no primeiro link de cada card/div grande
+        cards = self.driver.find_elements(By.XPATH, "//div[contains(@class,'card') or contains(@class,'panel') or contains(@class,'box') or contains(@class,'item') or contains(@class,'row')]//a | //div[contains(@class,'card') or contains(@class,'panel') or contains(@class,'box') or contains(@class,'item') or contains(@class,'row')]//button")
+        for card in cards:
+            try:
+                if card.is_displayed():
+                    txt = card.text.strip().lower()
+                    if len(txt) > 2:
+                        log.info(f"[CARD] {txt[:40]}")
+                        self.driver.execute_script("arguments[0].scrollIntoView(true); arguments[0].click();", card)
+                        self._rand(3, 5)
+                        if self._em_pagina_pesquisa():
+                            return True
+            except:
+                pass
+
+        log.info("Nenhum link de pesquisa encontrado")
         return False
+
+    def _em_pagina_pesquisa(self):
+        """Verifica se a pagina atual parece ser uma pesquisa"""
+        url = self.driver.current_url.lower()
+        if any(p in url for p in ["falai.com.vc", "painel", "dashboard"]):
+            return False
+        try:
+            page = self.driver.page_source.lower()
+            if any(p in page for p in ["radio", "checkbox", "select", "option", "input",
+                                        "pergunta", "questão", "questao", "marque", "escolha",
+                                        "selecione", "próximo", "proximo", "enviar"]):
+                return True
+        except:
+            pass
+        return len(url) > 10 and "falai.com.vc" not in url
 
     def _responder_iframes(self):
         """Tenta responder perguntas dentro de iframes"""
