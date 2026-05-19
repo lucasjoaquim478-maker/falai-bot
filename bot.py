@@ -441,11 +441,11 @@ class FalaiBot:
 
         log.info(f"Respondendo... URL: {url[:80]}")
 
-        if any(p in page for p in ["obrigado", "obrigada", "finalizada", "concluída",
-                                     "terminou", "agradecemos", "survey complete",
-                                     "muito obrigado", "suas respostas foram salvas",
-                                     "pesquisa encerrada", "encerrada",
-                                     "você já respondeu", "voce ja respondeu"]):
+        if any(p in page for p in ["finalizada", "concluída",
+                                      "terminou", "survey complete",
+                                      "suas respostas foram salvas",
+                                      "pesquisa encerrada", "encerrada",
+                                      "você já respondeu", "voce ja respondeu"]):
             log.info("Pesquisa ja concluida/finalizada")
             return "COMPLETE"
 
@@ -582,19 +582,22 @@ class FalaiBot:
             "Concluir pesquisa", "Finalizar pesquisa",
             "Terminar", "Terminar pesquisa"
         ]
+        trans = "translate(.,'ABCDEFGHIJKLMNOPQRSTUVWXYZÃÁÀÂÄÉÈÊẼËÍÌÎÏÓÒÔÖÕÚÙÛÜÇÑ','abcdefghijklmnopqrstuvwxyzãáàâäéèêẽëíìîïóòôöõúùûüçñ')"
         for _ in range(3):
             for texto in textos:
+                lower = texto.lower()
                 for tag in ["button", "a", "span", "input", "div"]:
-                    try:
-                        xpath = f"//{tag}[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZÃÁÀÂÄÉÈÊẼËÍÌÎÏÓÒÔÖÕÚÙÛÜÇÑ','abcdefghijklmnopqrstuvwxyzãáàâäéèêẽëíìîïóòôöõúùûüçñ'),'{texto.lower()}')]"
-                        el = self.driver.find_element(By.XPATH, xpath)
-                        if el.is_displayed():
-                            if self._clicar(el):
-                                log.info(f"Botao '{texto}'")
-                                self._rand(0.5, 1.5)
-                                return True
-                    except:
-                        continue
+                    for expr in [f"//{tag}[contains({trans},'{lower}')]",
+                                 f"//{tag}[contains(translate(@value,'ABCDEFGHIJKLMNOPQRSTUVWXYZÃÁÀÂÄÉÈÊẼËÍÌÎÏÓÒÔÖÕÚÙÛÜÇÑ','abcdefghijklmnopqrstuvwxyzãáàâäéèêẽëíìîïóòôöõúùûüçñ'),'{lower}')]"]:
+                        try:
+                            el = self.driver.find_element(By.XPATH, expr)
+                            if el.is_displayed():
+                                if self._clicar(el):
+                                    log.info(f"Botao '{texto}'")
+                                    self._rand(0.5, 1.5)
+                                    return True
+                        except:
+                            continue
             self._rand()
         return False
 
@@ -684,7 +687,7 @@ class FalaiBot:
                         self._rand(2, 3)
                         if not self._avancar():
                             log.info("Ainda sem acao, verificando se acabou...")
-                            if any(p in self.driver.page_source.lower() for p in ["obrigado", "concluída", "finalizada"]):
+                            if any(p in self.driver.page_source.lower() for p in ["concluída", "finalizada", "encerrada"]):
                                 self.stats["respondidas"] += 1
                                 em_pesquisa = False
                                 log.info(f"Detectado fim! Total: {self.stats['respondidas']}")
