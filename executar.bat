@@ -17,13 +17,14 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b 1
 )
 
-:: Instalar dependencias se necessario
-pip show selenium >nul 2>nul
+:: Instalar dependencias
+echo [*] Verificando dependencias...
+pip install -r requirements.txt --quiet 2>nul
 if %ERRORLEVEL% NEQ 0 (
     echo [*] Instalando dependencias...
     pip install -r requirements.txt
-    echo.
 )
+echo.
 
 :: Pular config se ja existe
 if exist config.txt (
