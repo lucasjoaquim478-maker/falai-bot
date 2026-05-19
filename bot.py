@@ -416,6 +416,8 @@ class FalaiBot:
                         log.info("ConviteID redirecionou para mensagem (ja usado/expirado)")
                         self.convites_usados.add(conv_id)
                         self.convite_atual = None
+                        self.driver.get(self.URL)
+                        self._rand(2, 3)
                         return False
                     if self._em_pesquisa():
                         return True
@@ -717,6 +719,12 @@ class FalaiBot:
                     url_anterior = url_atual
                     self._debug("url_change")
                     cliques_seguidos = 0
+                    # Se URL mudou para frmmensagem fora de pesquisa, redirect atrasado
+                    if "frmmensagem" in url_atual and not em_pesquisa:
+                        log.info("Redirect atrasado de ConviteID ja processado, voltando")
+                        self.driver.get(self.URL)
+                        self._rand(3, 5)
+                        continue
 
                 # Detectar se esta em pagina de pesquisa
                 nesta_pesquisa = self._em_pesquisa()
