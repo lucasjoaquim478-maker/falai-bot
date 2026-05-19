@@ -272,21 +272,79 @@ class FalaiBot:
 
     def _navegar_pesquisas(self):
         log.info("Procurando pesquisas...")
-        textos = [
-            "Pesquisa", "Responder", "Participar", "Disponível",
-            "Disponivel", "Nova pesquisa", "Iniciar", "Começar",
-            "Start", "Survey", "responder"
-        ]
-        btn = self._achar_botao(textos)
-        if btn:
+        log.info(f"URL: {self.driver.current_url[:100]}")
+        log.info(f"Titulo: {self.driver.title[:60]}")
+
+        # Salva screenshot pra debug
+        try:
+            self.driver.save_screenshot("debug_dashboard.png")
+            log.info("Screenshot: debug_dashboard.png")
+        except:
+            pass
+
+        # Lista todos os links e botoes visiveis
+        todos = self.driver.find_elements(By.XPATH, "//a | //button | //span[@role='button'] | //div[@role='button']")
+        log.info(f"Total de elementos clicaveis: {len(todos)}")
+        candidatos = []
+        for el in todos:
             try:
-                btn.click()
-                log.info(f"Link: '{btn.text.strip()[:30]}'")
-                self._rand(2, 4)
-                return True
+                if el.is_displayed():
+                    txt = el.text.strip().lower()
+                    href = el.get_attribute("href") or ""
+                    if txt and len(txt) > 1 and txt not in ["", "home", "sobre", "blog", "minha conta"]:
+                        candidatos.append((txt, href, el))
+                        if len(txt) < 30:
+                            log.info(f"  Link: '{txt[:40]}' href='{href[:60]}'")
             except:
                 pass
+
+        # Palavras que indicam pesquisa
+        palavras = ["pesquis", "respond", "particip", "dispon", "iniciar",
+                    "começar", "comecar", "survey", "start", "nova", "abrir",
+                    "acessar", "entrar", "ir para", "painel"]
+
+        for txt, href, el in candidatos:
+            if any(p in txt for p in palavras):
+                log.info(f"Clicando em '{txt[:30]}'")
+                try:
+                    el.click()
+                    self._rand(3, 5)
+                    return True
+                except:
+                    self.driver.execute_script("arguments[0].click();", el)
+                    self._rand(3, 5)
+                    return True
+
+        # Tenta clicar em qualquer link que va para dominio diferente
+        for txt, href, el in candidatos:
+            if href and "falai.com.vc" not in href and href.startswith("http"):
+                log.info(f"Link externo: '{txt[:20]}' -> {href[:60]}")
+                try:
+                    el.click()
+                    self._rand(3, 5)
+                    return True
+                except:
+                    pass
+
         return False
+
+    def _responder_iframes(self):
+        """Tenta responder perguntas dentro de iframes"""
+        for i, iframe in enumerate(self.driver.find_elements(By.TAG_NAME, "iframe")):
+            try:
+                self.driver.switch_to.frame(iframe)
+                src = iframe.get_attribute("src") or ""
+                log.info(f"Verificando iframe {i}: {src[:80]}")
+                res = self._responder_pagina()
+                if res != "NO_INTERACTION":
+                    log.info(f"Iframe {i} respondeu: {res}")
+                    self.driver.switch_to.default_content()
+                    return res
+            except:
+                pass
+            finally:
+                self.driver.switch_to.default_content()
+        return "NO_INTERACTION"
 
     def rodar(self):
         log.info(f"Iniciando bot: {self.email}")
@@ -300,43 +358,69 @@ class FalaiBot:
 
         log.info("Loop de pesquisas...")
         max_sem = 0
+        em_pesquisa = False
 
         while True:
             try:
                 url = self.driver.current_url.lower()
-                if any(p in url for p in ["painel", "dashboard", "home", "falai.com.vc"]):
-                    if not self._navegar_pesquisas():
+                pagina_falai = any(p in url for p in ["falai.com.vc", "painel", "dashboard", "home"])
+                pagina_externa = not pagina_falai and url.startswith("http")
+
+                # Se estiver em pagina externa, esta respondendo pesquisa
+                if pagina_externa:
+                    em_pesquisa = True
+                    max_sem = 0
+
+                if pagina_falai and not em_pesquisa:
+                    if self._navegar_pesquisas():
+                        max_sem = 0
+                        self._rand(3, 5)
+                        continue
+                    else:
                         max_sem += 1
                         log.info(f"Sem pesquisa ({max_sem})")
                         if max_sem >= 3:
                             log.info("Recarregando...")
                             self.driver.get(self.URL)
                             self._rand(3, 5)
-                            try:
-                                self._logar()
-                            except:
-                                pass
+                            # Relogin se necessario
+                            if "login" in self.driver.current_url.lower() or "entrar" in self.driver.page_source.lower():
+                                try:
+                                    self._logar()
+                                except:
+                                    pass
                             max_sem = 0
                         self._rand(5, 10)
                         continue
 
-                max_sem = 0
-                res = self._responder_pagina()
+                if pagina_externa or em_pesquisa:
+                    res = self._responder_pagina()
 
-                if res == "COMPLETE":
-                    self.stats["respondidas"] += 1
-                    log.info(f"Concluida! Total: {self.stats['respondidas']}")
-                    self._rand(2, 4)
-                    self.driver.get(self.URL)
-                    self._rand(2, 3)
-                    continue
+                    if res == "COMPLETE":
+                        self.stats["respondidas"] += 1
+                        log.info(f"Concluida! Total: {self.stats['respondidas']}")
+                        em_pesquisa = False
+                        self._rand(2, 4)
+                        self.driver.get(self.URL)
+                        self._rand(2, 3)
+                        continue
 
-                if not self._avancar():
-                    log.info("Sem acao. Tentando navegar...")
-                    if not self._navegar_pesquisas():
-                        self._rand(3, 6)
-                        self.driver.refresh()
-                        self._rand(3, 5)
+                    if res == "NO_INTERACTION":
+                        res = self._responder_iframes()
+
+                    if not self._avancar():
+                        # Se nao achou nada, verifica se voltou pro Falai
+                        if any(p in self.driver.current_url.lower() for p in ["falai.com.vc", "obrigado", "finalizado"]):
+                            log.info("Voltou ao Falai - pesquisa concluida")
+                            em_pesquisa = False
+                            self.stats["respondidas"] += 1
+                            self._rand(2, 4)
+                            self.driver.get(self.URL)
+                        else:
+                            log.info("Aguardando...")
+                            self._rand(3, 6)
+                            self.driver.refresh()
+                            self._rand(3, 5)
 
             except KeyboardInterrupt:
                 log.info("Parando...")
