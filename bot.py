@@ -468,6 +468,7 @@ class FalaiBot:
         return self._responder_conteudo()
 
     def _responder_conteudo(self):
+        # Tenta radios visiveis (inputs normais)
         radios = self.driver.find_elements(By.CSS_SELECTOR, "input[type='radio']")
         visiveis = [r for r in radios if r.is_displayed() and r.is_enabled()]
         if visiveis:
@@ -477,6 +478,28 @@ class FalaiBot:
             self._rand()
             return "OK"
 
+        # Tenta radios ocultos (Etalks/FastQuest: input display:none + label visivel)
+        todos_radios = [r for r in radios if r.is_enabled()]
+        if todos_radios:
+            escolha = random.choice(todos_radios)
+            # Tenta clicar no label associado
+            radio_id = escolha.get_attribute("id")
+            clicou = False
+            if radio_id:
+                try:
+                    lbl = self.driver.find_element(By.CSS_SELECTOR, f"label[for='{radio_id}']")
+                    if lbl.is_displayed():
+                        lbl.click()
+                        clicou = True
+                except:
+                    pass
+            if not clicou:
+                self.driver.execute_script("arguments[0].click();", escolha)
+            log.info(f"Radio oculto ({len(todos_radios)} opcoes)")
+            self._rand()
+            return "OK"
+
+        # Tenta checkboxes visiveis
         checks = self.driver.find_elements(By.CSS_SELECTOR, "input[type='checkbox']")
         visiveis = [c for c in checks if c.is_displayed() and c.is_enabled()]
         if visiveis:
@@ -484,6 +507,27 @@ class FalaiBot:
             for c in random.sample(visiveis, qtd):
                 self._clicar_radio(c)
             log.info(f"{qtd} checkbox(es)")
+            self._rand()
+            return "OK"
+
+        # Tenta checkboxes ocultos
+        todos_checks = [c for c in checks if c.is_enabled()]
+        if todos_checks:
+            qtd = min(random.randint(1, 3), len(todos_checks))
+            for c in random.sample(todos_checks, qtd):
+                cid = c.get_attribute("id")
+                clicou = False
+                if cid:
+                    try:
+                        lbl = self.driver.find_element(By.CSS_SELECTOR, f"label[for='{cid}']")
+                        if lbl.is_displayed():
+                            lbl.click()
+                            clicou = True
+                    except:
+                        pass
+                if not clicou:
+                    self.driver.execute_script("arguments[0].click();", c)
+            log.info(f"{qtd} checkbox(es) oculto(s)")
             self._rand()
             return "OK"
 
@@ -548,6 +592,32 @@ class FalaiBot:
                 self._rand()
             log.info("Celula tabela")
             return "OK"
+
+        # Tenta labels de check-group (Etalks/FastQuest)
+        labels = self.driver.find_elements(By.CSS_SELECTOR, ".check-group label, .check-label label, label[class*='check']")
+        clicaveis = [l for l in labels if l.is_displayed() and l.text.strip()]
+        if clicaveis:
+            escolha = random.choice(clicaveis)
+            self._clicar(escolha)
+            log.info(f"Label check-group ({len(clicaveis)} opcoes): {escolha.text.strip()[:30]}")
+            self._rand()
+            return "OK"
+
+        # Tenta qualquer label clicavel associado a input oculto
+        labels_geral = self.driver.find_elements(By.CSS_SELECTOR, "label")
+        clicaveis = [l for l in labels_geral if l.is_displayed() and l.text.strip() and l.get_attribute("for")]
+        if clicaveis:
+            escolha = random.choice(clicaveis)
+            inp_id = escolha.get_attribute("for")
+            try:
+                inp = self.driver.find_element(By.ID, inp_id)
+                if inp.tag_name.lower() in ["input", "select", "textarea"] and not inp.is_selected():
+                    self._clicar(escolha)
+                    log.info(f"Label generico ({len(clicaveis)} opcoes): {escolha.text.strip()[:30]}")
+                    self._rand()
+                    return "OK"
+            except:
+                pass
 
         return "NO_INTERACTION"
 
@@ -625,6 +695,7 @@ class FalaiBot:
         ciclos_sem_pesquisa = 0
         em_pesquisa = False
         url_anterior = ""
+        cliques_seguidos = 0
 
         while True:
             try:
@@ -633,6 +704,7 @@ class FalaiBot:
                     log.info(f"URL mudou: {url_atual[:100]}")
                     url_anterior = url_atual
                     self._debug("url_change")
+                    cliques_seguidos = 0
 
                 # Detectar se esta em pagina de pesquisa
                 nesta_pesquisa = self._em_pesquisa()
@@ -674,10 +746,14 @@ class FalaiBot:
                     log.info(f"PESQUISA CONCLUIDA! Total: {self.stats['respondidas']}")
                     self._debug("concluida")
                     self._rand(3, 5)
+                    cliques_seguidos = 0
                     # Voltar ao Falai
                     self.driver.get(self.URL)
                     self._rand(3, 4)
                     continue
+
+                if resultado == "OK":
+                    cliques_seguidos = 0
 
                 if not self._avancar():
                     log.info("Sem botoes de acao")
@@ -699,6 +775,17 @@ class FalaiBot:
                             self._rand(3, 5)
                     else:
                         self._rand(5, 10)
+                elif resultado == "NO_INTERACTION":
+                    cliques_seguidos += 1
+                    log.info(f"Proximo clicado sem responder ({cliques_seguidos}x)")
+                    if cliques_seguidos >= 5:
+                        log.warning("5x sem responder — forçando saida da pesquisa")
+                        self._debug("stuck")
+                        self.stats["respondidas"] += 1
+                        em_pesquisa = False
+                        cliques_seguidos = 0
+                        self.driver.get(self.URL)
+                        self._rand(3, 4)
 
             except KeyboardInterrupt:
                 log.info("Parando pelo usuario...")
