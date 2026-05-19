@@ -38,6 +38,8 @@ class FalaiBot:
         self.driver = None
         self.wait = None
         self.stats = {"respondidas": 0, "erros": 0, "inicio": datetime.now()}
+        self.convites_usados = set()
+        self.convite_atual = None
         self._init_driver()
 
     def _init_driver(self):
@@ -402,9 +404,19 @@ class FalaiBot:
                 )
                 url = link_el.get_attribute("href")
                 if url:
+                    conv_id = url.split("ConviteID=")[-1].split("&")[0]
+                    if conv_id in self.convites_usados:
+                        log.info(f"ConviteID '{conv_id[:30]}...' ja processado, pulando")
+                        return False
                     log.info(f"ConviteID: {url[:100]}")
+                    self.convite_atual = conv_id
                     self.driver.get(url)
                     self._rand(4, 6)
+                    if "frmmensagem" in (self.driver.current_url.lower()):
+                        log.info("ConviteID redirecionou para mensagem (ja usado/expirado)")
+                        self.convites_usados.add(conv_id)
+                        self.convite_atual = None
+                        return False
                     if self._em_pesquisa():
                         return True
                     if len(self.driver.window_handles) > 1:
@@ -741,6 +753,9 @@ class FalaiBot:
                 resultado = self._responder_pagina()
 
                 if resultado == "COMPLETE":
+                    if self.convite_atual:
+                        self.convites_usados.add(self.convite_atual)
+                        self.convite_atual = None
                     self.stats["respondidas"] += 1
                     em_pesquisa = False
                     log.info(f"PESQUISA CONCLUIDA! Total: {self.stats['respondidas']}")
@@ -764,6 +779,9 @@ class FalaiBot:
                         if not self._avancar():
                             log.info("Ainda sem acao, verificando se acabou...")
                             if any(p in self.driver.page_source.lower() for p in ["concluída", "finalizada", "encerrada"]):
+                                if self.convite_atual:
+                                    self.convites_usados.add(self.convite_atual)
+                                    self.convite_atual = None
                                 self.stats["respondidas"] += 1
                                 em_pesquisa = False
                                 log.info(f"Detectado fim! Total: {self.stats['respondidas']}")
@@ -781,6 +799,9 @@ class FalaiBot:
                     if cliques_seguidos >= 5:
                         log.warning("5x sem responder — forçando saida da pesquisa")
                         self._debug("stuck")
+                        if self.convite_atual:
+                            self.convites_usados.add(self.convite_atual)
+                            self.convite_atual = None
                         self.stats["respondidas"] += 1
                         em_pesquisa = False
                         cliques_seguidos = 0
