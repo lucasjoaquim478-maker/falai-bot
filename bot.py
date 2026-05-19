@@ -5,8 +5,10 @@ import sys
 import logging
 from datetime import datetime
 
-import undetected_chromedriver as uc
+from selenium import webdriver
 from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import (
@@ -33,14 +35,31 @@ class FalaiBot:
         self.stats = {"respondidas": 0, "erros": 0, "inicio": datetime.now()}
 
     def _criar_driver(self, headless):
-        opt = uc.ChromeOptions()
+        opt = Options()
         if headless:
             opt.add_argument("--headless=new")
         opt.add_argument("--window-size=1366,768")
         opt.add_argument("--disable-gpu")
         opt.add_argument("--no-sandbox")
         opt.add_argument("--disable-dev-shm-usage")
-        return uc.Chrome(options=opt)
+        # Anti-detecção
+        opt.add_argument("--disable-blink-features=AutomationControlled")
+        opt.add_experimental_option("excludeSwitches", ["enable-automation"])
+        opt.add_experimental_option("useAutomationExtension", False)
+        prefs = {"credentials_enable_service": False, "profile.password_manager_enabled": False}
+        opt.add_experimental_option("prefs", prefs)
+
+        driver = webdriver.Chrome(options=opt)
+
+        # Esconde navigator.webdriver
+        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+            "source": """
+                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+                Object.defineProperty(navigator, 'plugins', { get: () => [1,2,3,4,5] });
+                Object.defineProperty(navigator, 'languages', { get: () => ['pt-BR', 'pt', 'en'] });
+            """
+        })
+        return driver
 
     def _rand(self, a=0.5, b=2.0):
         time.sleep(random.uniform(a, b))
