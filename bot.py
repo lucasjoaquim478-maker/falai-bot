@@ -2,18 +2,20 @@ import time
 import random
 import os
 import sys
+import json
 import logging
 from datetime import datetime
+from pathlib import Path
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import (
     TimeoutException, NoSuchElementException,
-    ElementClickInterceptedException
+    ElementClickInterceptedException, StaleElementReferenceException,
+    JavascriptException, WebDriverException
 )
 
 logging.basicConfig(
@@ -27,489 +29,672 @@ log = logging.getLogger("falai-bot")
 class FalaiBot:
     URL = "https://www.falai.com.vc/"
 
-    def __init__(self, email, senha, headless=False):
+    def __init__(self, email, senha, headless=False, debug_dir="debug"):
         self.email = email
         self.senha = senha
-        self.driver = self._criar_driver(headless)
-        self.wait = WebDriverWait(self.driver, 20)
+        self.headless = headless
+        self.debug_dir = Path(debug_dir)
+        self.debug_dir.mkdir(exist_ok=True)
+        self.driver = None
+        self.wait = None
         self.stats = {"respondidas": 0, "erros": 0, "inicio": datetime.now()}
+        self._init_driver()
 
-    def _criar_driver(self, headless):
+    def _init_driver(self):
         opt = Options()
-        if headless:
+        if self.headless:
             opt.add_argument("--headless=new")
         opt.add_argument("--window-size=1366,768")
         opt.add_argument("--disable-gpu")
         opt.add_argument("--no-sandbox")
         opt.add_argument("--disable-dev-shm-usage")
-        # Anti-detecção
         opt.add_argument("--disable-blink-features=AutomationControlled")
-        opt.add_experimental_option("excludeSwitches", ["enable-automation"])
+        opt.add_argument("--disable-extensions")
+        opt.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
         opt.add_experimental_option("useAutomationExtension", False)
-        prefs = {"credentials_enable_service": False, "profile.password_manager_enabled": False}
-        opt.add_experimental_option("prefs", prefs)
+        opt.add_experimental_option("prefs", {
+            "credentials_enable_service": False,
+            "profile.password_manager_enabled": False
+        })
 
-        driver = webdriver.Chrome(options=opt)
-
-        # Esconde navigator.webdriver
-        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+        self.driver = webdriver.Chrome(options=opt)
+        self.driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
             "source": """
                 Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
                 Object.defineProperty(navigator, 'plugins', { get: () => [1,2,3,4,5] });
                 Object.defineProperty(navigator, 'languages', { get: () => ['pt-BR', 'pt', 'en'] });
+                Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
             """
         })
-        return driver
+        self.wait = WebDriverWait(self.driver, 20)
 
     def _rand(self, a=0.5, b=2.0):
         time.sleep(random.uniform(a, b))
 
+    def _debug(self, name):
+        try:
+            ts = datetime.now().strftime("%H%M%S")
+            self.driver.save_screenshot(str(self.debug_dir / f"{ts}_{name}.png"))
+            with open(str(self.debug_dir / f"{ts}_{name}.html"), "w", encoding="utf-8") as f:
+                f.write(self.driver.page_source)
+        except:
+            pass
+
+    # ==================== LOGIN ====================
+
     def _logar(self):
-        log.info("Abrindo site...")
+        log.info("=" * 50)
+        log.info("LOGIN")
+        log.info("=" * 50)
         self.driver.get(self.URL)
         self._rand(2, 4)
 
         try:
-            btn_cookie = self.driver.find_element(By.CSS_SELECTOR, ".acceptcookies")
-            btn_cookie.click()
+            btn = self.driver.find_element(By.CSS_SELECTOR, ".acceptcookies")
+            btn.click()
             log.info("Cookies aceitos")
             self._rand()
         except:
             pass
 
+        log.info("Aguardando jQuery...")
+        try:
+            self.wait.until(lambda d: d.execute_script("return typeof jQuery !== 'undefined'"))
+        except:
+            log.warning("jQuery nao detectado, tentando mesmo assim")
+
         log.info("Enviando login via AJAX...")
         self._rand(1, 2)
 
-        # Aguardar jQuery carregar
-        self.wait.until(lambda d: d.execute_script("return typeof jQuery !== 'undefined'"))
-        log.info("jQuery OK")
-
-        login_js = """
+        js = """
         const email = arguments[0];
         const senha = arguments[1];
         const done = arguments[2];
 
-        // Preenche os campos primeiro
-        document.getElementById('username').value = email;
-        document.getElementById('password').value = senha;
-
-        // Faz a requisicao AJAX direta igual o site faz
-        $.post("back.php", {
-            email: email,
-            s: senha,
-            info: "logar",
-            pesquisaID: '',
-            statusID: '',
-            PainelistaID: '',
-            entrevistadoID: ''
-        }, function(data) {
-            if (data && data.dados && data.dados.redirect) {
-                window.location.href = data.dados.redirect;
-                done(true);
+        function tentarLogin() {
+            // Tenta via jQuery
+            if (typeof jQuery !== 'undefined') {
+                jQuery.post("back.php", {
+                    email: email,
+                    s: senha,
+                    info: "logar",
+                    pesquisaID: '',
+                    statusID: '',
+                    PainelistaID: '',
+                    entrevistadoID: ''
+                }, function(data) {
+                    if (data && data.dados && data.dados.redirect) {
+                        window.location.href = data.dados.redirect;
+                        done(true);
+                    } else {
+                        done(false);
+                    }
+                }).fail(function() {
+                    done(false);
+                });
             } else {
-                done(false);
+                // Fallback: fetch nativo
+                var form = new FormData();
+                form.append('email', email);
+                form.append('s', senha);
+                form.append('info', 'logar');
+                form.append('pesquisaID', '');
+                form.append('statusID', '');
+                form.append('PainelistaID', '');
+                form.append('entrevistadoID', '');
+
+                fetch('back.php', { method: 'POST', body: form })
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data && data.dados && data.dados.redirect) {
+                            window.location.href = data.dados.redirect;
+                            done(true);
+                        } else {
+                            done(false);
+                        }
+                    })
+                    .catch(() => done(false));
             }
-        }).fail(function() {
-            done(false);
-        });
+        }
+
+        // Preenche campos tambem (alguns sites precisam)
+        var u = document.getElementById('username');
+        var p = document.getElementById('password');
+        if (u) u.value = email;
+        if (p) p.value = senha;
+
+        tentarLogin();
         """
 
-        sucesso = self.driver.execute_async_script(login_js, self.email, self.senha)
+        sucesso = self.driver.execute_async_script(js, self.email, self.senha)
         self._rand(3, 5)
 
         if sucesso:
-            log.info("Login OK - redirect recebido")
+            log.info(f"Login OK! URL: {self.driver.current_url[:80]}")
+            self._debug("pos_login")
             self._rand(2, 3)
-        else:
-            # Verificar modal de erro
+            return True
+
+        try:
+            erro = self.driver.find_element(By.CSS_SELECTOR, "#modalMsg .modal-body")
+            if erro.is_displayed():
+                msg = erro.text.strip()
+                log.error(f"Erro no login: {msg}")
+                raise Exception(f"Login falhou: {msg}")
+        except TimeoutException:
+            pass
+        except NoSuchElementException:
+            pass
+
+        raise Exception("Login falhou - sem redirect do servidor")
+
+    # ==================== NAVEGACAO ====================
+
+    def _extrair_texto(self, el):
+        """Extrai texto de um elemento incluindo filhos"""
+        try:
+            return el.text.strip()
+        except:
+            return ""
+
+    def _extrair_href(self, el):
+        """Extrai href de um elemento"""
+        try:
+            return el.get_attribute("href") or ""
+        except:
+            return ""
+
+    def _extrair_html(self, el):
+        """Extrai outerHTML de um elemento"""
+        try:
+            return (el.get_attribute("outerHTML") or "")[:300]
+        except:
+            return ""
+
+    def _clicar(self, el):
+        """Tenta clicar de varias formas"""
+        try:
+            self.driver.execute_script("arguments[0].scrollIntoView({behavior:'instant',block:'center'});", el)
+            self._rand(0.3, 0.8)
             try:
-                erro = self.driver.find_element(By.CSS_SELECTOR, "#modalMsg .modal-body")
-                if erro.is_displayed():
-                    msg = erro.text.strip()
-                    log.error(f"Erro no login: {msg}")
-                    raise Exception(f"Login falhou: {msg}")
-            except TimeoutException:
-                pass
-            except NoSuchElementException:
-                pass
-            raise Exception("Login falhou - sem redirect")
+                el.click()
+            except:
+                self.driver.execute_script("arguments[0].click();", el)
+            return True
+        except Exception as e:
+            log.warning(f"Falha no clique: {e}")
+            return False
 
-        log.info(f"URL apos login: {self.driver.current_url[:80]}")
-        return True
+    def _listar_elementos(self):
+        """Lista todos elementos clicaveis da pagina"""
+        js = """
+        return Array.from(document.querySelectorAll(
+            'a, button, input[type="submit"], input[type="button"], ' +
+            '[role="button"], [onclick], [class*="btn"], [class*="card"], ' +
+            '[class*="link"], [class*="click"], li, td, span, div, h1, h2, h3, h4, h5, p'
+        )).filter(el => {
+            try {
+                const rect = el.getBoundingClientRect();
+                const style = window.getComputedStyle(el);
+                return rect.width > 0 && rect.height > 0 &&
+                       style.display !== 'none' &&
+                       style.visibility !== 'hidden' &&
+                       style.opacity !== '0';
+            } catch(e) { return false; }
+        }).map(el => ({
+            tag: el.tagName.toLowerCase(),
+            texto: (el.textContent || '').trim().slice(0, 100),
+            href: el.getAttribute('href') || '',
+            onclick: (el.getAttribute('onclick') || '').slice(0, 50),
+            classe: (el.getAttribute('class') || '').slice(0, 60),
+            id: el.getAttribute('id') || '',
+            type: el.getAttribute('type') || '',
+            role: el.getAttribute('role') || '',
+            data: el.getAttribute('data-target') || '',
+            rect_w: Math.round(rect.width),
+            rect_h: Math.round(rect.height)
+        }));
+        """
+        try:
+            return self.driver.execute_script(js)
+        except:
+            return []
 
-    def _achar_botao(self, textos):
-        for texto in textos:
-            for tag in ["button", "a", "span", "div"]:
-                try:
-                    elem = self.driver.find_element(
-                        By.XPATH,
-                        f"//{tag}[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'{texto.lower()}')]"
-                    )
-                    if elem.is_displayed():
-                        return elem
-                except:
-                    pass
+    def _logar_elementos(self, elementos):
+        """Loga todos elementos encontrados"""
+        log.info(f"Elementos visiveis: {len(elementos)}")
+        # Agrupa por tag
+        for tag in ["button", "a", "span", "div", "input", "li", "td"]:
+            els = [e for e in elementos if e["tag"] == tag and e["texto"]]
+            if els:
+                log.info(f"  <{tag}>: {len(els)} com texto")
+                for e in els[:8]:
+                    log.info(f"    '{e['texto'][:50]}' href={e['href'][:40]} class={e['classe'][:30]}")
+
+    def _achar_botao_pesquisa(self, elementos):
+        """Procura o botao de pesquisa usando multiplas estrategias"""
+        texto_baixo = [(e, e["texto"].lower()) for e in elementos]
+
+        # Estrategia 1: Palavras exatas no texto
+        keywords = [
+            "responda agora", "responder", "responda", "participar",
+            "pesquisa disponivel", "pesquisa disponível", "nova pesquisa",
+            "iniciar pesquisa", "começar", "acessar pesquisa",
+            "ir para pesquisa", "responder pesquisa", "painel",
+            "disponivel", "disponível", "iniciar", "abrir"
+        ]
+        for el, txt in texto_baixo:
+            for kw in keywords:
+                if kw in txt:
+                    log.info(f"[ESTRATEGIA-1] '{el['texto'][:40]}' (keyword: '{kw}')")
+                    return el
+
+        # Estrategia 2: Palavras parciais
+        for el, txt in texto_baixo:
+            if ("respond" in txt or "pesquis" in txt or "particip" in txt
+                or "dispon" in txt or "inici" in txt or "agora" in txt
+                or "survey" in txt or "comec" in txt or "avali" in txt):
+                log.info(f"[ESTRATEGIA-2] '{el['texto'][:40]}'")
+                return el
+
+        # Estrategia 3: Links externos
+        for el, txt in texto_baixo:
+            if el["href"] and "falai.com.vc" not in el["href"] and el["href"].startswith("http"):
+                log.info(f"[ESTRATEGIA-3] link externo '{el['texto'][:30]}' -> {el['href'][:50]}")
+                return el
+
+        # Estrategia 4: Elementos grandes (cards)
+        for el in elementos:
+            if el["rect_w"] > 100 and el["rect_h"] > 30 and el["texto"]:
+                log.info(f"[ESTRATEGIA-4] card {el['rect_w']}x{el['rect_h']} '{el['texto'][:30]}'")
+                return el
+
+        # Estrategia 5: Qualquer elemento com texto relevante
+        for el, txt in texto_baixo:
+            palavras_relevantes = ["pesquisa", "pesquisas", "pesquisar", "responder",
+                                    "responda", "resposta", "pergunta", "questionário",
+                                    "questionario", "enquete", "votar", "voto",
+                                    "opiniao", "opinião", "avaliar", "avaliação",
+                                    "avaliacao", "pontos", "recompensa", "ganhar",
+                                    "dinheiro", "extra", "saldo", "carteira",
+                                    "minhas pesquisas", "pesquisas disponíveis",
+                                    "pesquisas disponiveis", "novas pesquisas",
+                                    "em aberto", "pendente", "para responder",
+                                    "clique aqui", "acessar", "entrar"]
+            if any(p in txt for p in palavras_relevantes):
+                log.info(f"[ESTRATEGIA-5] '{el['texto'][:40]}'")
+                return el
+
         return None
+
+    def _navegar_pesquisas(self):
+        log.info("=" * 50)
+        log.info("NAVEGANDO - Buscando pesquisas")
+        log.info(f"URL: {self.driver.current_url[:100]}")
+        log.info(f"Titulo: {self.driver.title[:60]}")
+        self._debug("dashboard")
+
+        try:
+            body = self.driver.find_element(By.TAG_NAME, "body")
+            log.info(f"TEXTO PAGINA: {body.text[:1500].replace(chr(10),' | ')}")
+        except:
+            pass
+
+        elementos = self._listar_elementos()
+        self._logar_elementos(elementos)
+
+        if not elementos:
+            log.warning("Nenhum elemento encontrado!")
+            return False
+
+        alvo = self._achar_botao_pesquisa(elementos)
+
+        if alvo:
+            log.info(f"Alvo encontrado! Texto: '{alvo['texto']}' Tag: <{alvo['tag']}>")
+            # Encontrar o elemento DOM real
+            xpath = f"//{alvo['tag']}"
+            if alvo["id"]:
+                xpath = f"//*[@id='{alvo['id']}']"
+            elif alvo["texto"]:
+                # Escapa aspas simples
+                texto_seguro = alvo["texto"].replace("'", "\\'")
+                xpath = f"//{alvo['tag']}[contains(text(), '{texto_seguro[:50]}')]"
+
+            try:
+                el = self.driver.find_element(By.XPATH, xpath)
+                if self._clicar(el):
+                    log.info("Clique realizado!")
+                    self._debug("pos_clique")
+                    self._rand(3, 5)
+                    # Verificar se entrou na pesquisa
+                    if self._em_pesquisa():
+                        return True
+                    # Talvez tenha aberto nova janela/aba
+                    if len(self.driver.window_handles) > 1:
+                        self.driver.switch_to.window(self.driver.window_handles[-1])
+                        log.info(f"Mudou para nova aba: {self.driver.current_url[:80]}")
+                        if self._em_pesquisa():
+                            return True
+            except Exception as e:
+                log.warning(f"Erro ao clicar no alvo: {e}")
+
+            # Fallback: tenta pelo JS
+            try:
+                self.driver.execute_script(f"""
+                    var el = document.querySelector('{alvo["tag"]}[class*="{alvo["classe"][:20]}"]');
+                    if (el) el.click();
+                """)
+                self._rand(3, 5)
+                if self._em_pesquisa():
+                    return True
+            except:
+                pass
+
+        log.info("Nenhum botao de pesquisa encontrado")
+        return False
+
+    def _em_pesquisa(self):
+        url = self.driver.current_url.lower()
+        if "falai.com.vc" in url or "painel" in url or "home" in url or "login" in url:
+            return False
+        try:
+            src = self.driver.page_source.lower()
+            if any(p in src for p in ["pergunta", "questão", "questao", "marque",
+                                        "escolha", "selecione", "próximo", "proximo",
+                                        "enviar", "radio", "checkbox", "input",
+                                        "option", "select", "survey", "quiz"]):
+                return True
+        except:
+            pass
+        return True  # URL diferente de falai = assumir que eh pesquisa
+
+    # ==================== RESPONDER ====================
 
     def _responder_pagina(self):
         self._rand(1, 2)
-        page_text = self.driver.page_source.lower()
+        url = self.driver.current_url.lower()
+        page = self.driver.page_source.lower()
 
-        if any(p in page_text for p in ["obrigado", "obrigada", "finalizada", "concluída",
-                                          "terminou", "agradecemos", "survey complete"]):
-            log.info("Pesquisa concluida")
+        log.info(f"Respondendo... URL: {url[:80]}")
+
+        if any(p in page for p in ["obrigado", "obrigada", "finalizada", "concluída",
+                                     "terminou", "agradecemos", "survey complete",
+                                     "muito obrigado", "suas respostas foram salvas",
+                                     "pesquisa encerrada", "encerrada",
+                                     "você já respondeu", "voce ja respondeu"]):
+            log.info("Pesquisa ja concluida/finalizada")
             return "COMPLETE"
 
+        # Procura em iframes primeiro
+        iframes = self.driver.find_elements(By.TAG_NAME, "iframe")
+        for i, iframe in enumerate(iframes):
+            try:
+                self.driver.switch_to.frame(iframe)
+                log.info(f"Verificando iframe {i}")
+                res = self._responder_conteudo()
+                self.driver.switch_to.default_content()
+                if res != "NO_INTERACTION":
+                    return res
+            except:
+                pass
+            finally:
+                self.driver.switch_to.default_content()
+
+        # Responde na pagina principal
+        return self._responder_conteudo()
+
+    def _responder_conteudo(self):
         radios = self.driver.find_elements(By.CSS_SELECTOR, "input[type='radio']")
         visiveis = [r for r in radios if r.is_displayed() and r.is_enabled()]
         if visiveis:
             escolha = random.choice(visiveis)
-            try:
-                label_id = escolha.get_attribute("id")
-                if label_id:
-                    try:
-                        self.driver.find_element(By.CSS_SELECTOR, f"label[for='{label_id}']").click()
-                    except:
-                        escolha.click()
-                else:
-                    escolha.click()
-            except ElementClickInterceptedException:
-                self.driver.execute_script("arguments[0].click();", escolha)
-            log.info(f"Radio respondido ({len(visiveis)} opcoes)")
+            self._clicar_radio(escolha)
+            log.info(f"Radio ({len(visiveis)} opcoes)")
             self._rand()
             return "OK"
 
         checks = self.driver.find_elements(By.CSS_SELECTOR, "input[type='checkbox']")
         visiveis = [c for c in checks if c.is_displayed() and c.is_enabled()]
         if visiveis:
-            marca = random.sample(visiveis, min(random.randint(1, 3), len(visiveis)))
-            for c in marca:
-                try:
-                    label_id = c.get_attribute("id")
-                    if label_id:
-                        try:
-                            self.driver.find_element(By.CSS_SELECTOR, f"label[for='{label_id}']").click()
-                        except:
-                            c.click()
-                    else:
-                        c.click()
-                except ElementClickInterceptedException:
-                    self.driver.execute_script("arguments[0].click();", c)
-            log.info(f"{len(marca)} checkbox(es) marcado(s)")
+            qtd = min(random.randint(1, 3), len(visiveis))
+            for c in random.sample(visiveis, qtd):
+                self._clicar_radio(c)
+            log.info(f"{qtd} checkbox(es)")
             self._rand()
             return "OK"
 
-        selects = self.driver.find_elements(By.TAG_NAME, "select")
-        for sel in selects:
-            if not sel.is_displayed():
-                continue
-            try:
-                s = Select(sel)
-                opcoes = [o for o in s.options if o.get_attribute("value")]
-                if opcoes:
-                    s.select_by_value(random.choice(opcoes).get_attribute("value"))
-                    log.info("Select preenchido")
-                    self._rand()
-                    return "OK"
-            except:
-                pass
+        selects = [s for s in self.driver.find_elements(By.TAG_NAME, "select") if s.is_displayed()]
+        if selects:
+            for sel in selects:
+                try:
+                    s = Select(sel)
+                    opts = [o for o in s.options if o.get_attribute("value")]
+                    if opts:
+                        s.select_by_value(random.choice(opts).get_attribute("value"))
+                        log.info("Select")
+                        self._rand()
+                        return "OK"
+                except:
+                    pass
 
-        ranges = self.driver.find_elements(By.CSS_SELECTOR, "input[type='range']")
+        ranges = [r for r in self.driver.find_elements(By.CSS_SELECTOR, "input[type='range']") if r.is_displayed()]
         for r in ranges:
-            if r.is_displayed():
-                min_v = int(r.get_attribute("min") or 0)
-                max_v = int(r.get_attribute("max") or 10)
-                mid = (min_v + max_v) // 2
-                self.driver.execute_script(
-                    f"arguments[0].value = {mid}; arguments[0].dispatchEvent(new Event('input'));"
-                    f"arguments[0].dispatchEvent(new Event('change'));",
-                    r
-                )
-                log.info(f"Range {mid}")
-                self._rand()
-                return "OK"
+            min_v = int(r.get_attribute("min") or 0)
+            max_v = int(r.get_attribute("max") or 10)
+            mid = (min_v + max_v) // 2
+            self.driver.execute_script(
+                f"arguments[0].value = {mid}; arguments[0].dispatchEvent(new Event('input')); arguments[0].dispatchEvent(new Event('change'));", r
+            )
+            log.info(f"Range {mid}")
+            self._rand()
+            return "OK"
 
-        textos = self.driver.find_elements(By.CSS_SELECTOR, "textarea, input[type='text'], input[type='email']")
-        visiveis = [t for t in textos if t.is_displayed() and t.is_enabled()]
-        if visiveis:
+        textos = [t for t in self.driver.find_elements(By.CSS_SELECTOR, "textarea, input[type='text'], input[type='email'], input[type='tel']")
+                  if t.is_displayed() and t.is_enabled()]
+        if textos:
             respostas = [
-                "Sim, concordo", "Acho importante", "Poderia ser melhor",
-                "Estou satisfeito", "Nao tenho opiniao", "Prefiro nao responder",
-                "Talvez", "Sim", "Nao", "Regular", "Bom", "Otimo"
+                "Sim", "Nao", "Talvez", "Sim, concordo", "Nao concordo",
+                "Regular", "Bom", "Otimo", "Excelente", "Ruim",
+                "Muito bom", "Satisfeito", "Insatisfeito", "Neutro",
+                "Diariamente", "Semanalmente", "Mensalmente", "Raramente",
+                "Nunca", "Sim, gostei", "Nao gostei", "Indiferente"
             ]
-            for t in visiveis[:3]:
+            for t in textos[:3]:
                 t.clear()
                 t.send_keys(random.choice(respostas))
                 self._rand()
-            log.info(f"Texto preenchido ({len(visiveis[:3])} campo(s))")
+            log.info(f"Texto ({len(textos[:3])})")
+            return "OK"
+
+        # Tenta estrelas/rating
+        estrelas = self.driver.find_elements(By.CSS_SELECTOR, "[class*='star'], [class*='rating'], [class*='estrela']")
+        clicaveis = [e for e in estrelas if e.is_displayed()]
+        if clicaveis:
+            self._clicar(random.choice(clicaveis))
+            log.info("Estrela/Rating")
+            self._rand()
+            return "OK"
+
+        # Tenta tabelas de opcao
+        celulas = self.driver.find_elements(By.CSS_SELECTOR, "td, th")
+        clicaveis = [c for c in celulas if c.is_displayed() and c.text.strip()]
+        if clicaveis:
+            for c in random.sample(clicaveis, min(3, len(clicaveis))):
+                self._clicar(c)
+                self._rand()
+            log.info("Celula tabela")
             return "OK"
 
         return "NO_INTERACTION"
 
+    def _clicar_radio(self, el):
+        try:
+            label_id = el.get_attribute("id")
+            if label_id:
+                try:
+                    lbl = self.driver.find_element(By.CSS_SELECTOR, f"label[for='{label_id}']")
+                    lbl.click()
+                    return
+                except:
+                    pass
+            el.click()
+        except ElementClickInterceptedException:
+            self.driver.execute_script("arguments[0].click();", el)
+        except:
+            pass
+
+    # ==================== BOTOES ====================
+
     def _avancar(self):
         textos = [
-            "Próximo", "Proximo", "Enviar", "OK", "Confirmar",
-            "Salvar", "Continuar", "Avançar", "Avancar",
-            "Finalizar", "Concluir", "Next", "Submit", "Continue",
-            "Send", "Done", "Sim", "Nao", "Pular"
+            "Próximo", "Proximo", "Próxima", "Proxima",
+            "Enviar", "OK", "Confirmar", "Salvar",
+            "Continuar", "Avançar", "Avancar",
+            "Finalizar", "Concluir", "Next", "Submit",
+            "Continue", "Send", "Done", "Sim", "Nao",
+            "Pular", "Pular pergunta", "Nao quero responder",
+            "Prefiro nao responder", "Talvez depois",
+            "Enviar respostas", "Enviar pesquisa",
+            "Concluir pesquisa", "Finalizar pesquisa",
+            "Terminar", "Terminar pesquisa"
         ]
         for _ in range(3):
-            btn = self._achar_botao(textos)
-            if btn:
-                try:
-                    btn.click()
-                    log.info(f"Botao '{btn.text.strip()[:20]}'")
-                    self._rand(0.5, 1.5)
-                    return True
-                except ElementClickInterceptedException:
-                    self.driver.execute_script("arguments[0].click();", btn)
-                    self._rand()
-                    return True
-                except Exception as e:
-                    log.warning(f"Erro no botao: {e}")
-                    self._rand()
+            for texto in textos:
+                for tag in ["button", "a", "span", "input", "div"]:
+                    try:
+                        xpath = f"//{tag}[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZÃÁÀÂÄÉÈÊẼËÍÌÎÏÓÒÔÖÕÚÙÛÜÇÑ','abcdefghijklmnopqrstuvwxyzãáàâäéèêẽëíìîïóòôöõúùûüçñ'),'{texto.lower()}')]"
+                        el = self.driver.find_element(By.XPATH, xpath)
+                        if el.is_displayed():
+                            if self._clicar(el):
+                                log.info(f"Botao '{texto}'")
+                                self._rand(0.5, 1.5)
+                                return True
+                    except:
+                        continue
+            self._rand()
         return False
 
-    def _navegar_pesquisas(self):
-        log.info("Procurando pesquisas...")
-        log.info(f"URL: {self.driver.current_url[:100]}")
-        log.info(f"Titulo: {self.driver.title[:60]}")
-
-        try:
-            self.driver.save_screenshot("debug_dashboard.png")
-            log.info("Screenshot salva: debug_dashboard.png")
-        except:
-            pass
-
-        # Loga todo texto visivel da pagina (exceto nav/footer)
-        body = self.driver.find_element(By.TAG_NAME, "body")
-        log.info(f"=== TEXTO DA PAGINA ===")
-        log.info(body.text[:2000].replace("\n", " | "))
-        log.info(f"=== FIM TEXTO ===")
-
-        # Varre TODOS os elementos visiveis que podem ser clicados
-        todos = self.driver.find_elements(By.XPATH, "//*[self::a or self::button or self::span or self::div or self::li or self::td or self::p or self::h1 or self::h2 or self::h3 or self::h4 or self::h5]")
-        log.info(f"Total elementos: {len(todos)}")
-
-        candidatos = []
-        ignorar = {"", "home", "sobre", "blog", "minha conta", "cadastre-se", "entrar"}
-
-        for el in todos:
-            try:
-                if not el.is_displayed():
-                    continue
-                txt = el.text.strip().lower()
-                if not txt or len(txt) <= 1 or txt in ignorar:
-                    continue
-                # Pega href, onclick, data-* attributes
-                href = el.get_attribute("href") or ""
-                onclick = el.get_attribute("onclick") or ""
-                data_target = el.get_attribute("data-target") or ""
-                classe = el.get_attribute("class") or ""
-                tag = el.tag_name
-                candidatos.append((txt, href, onclick, tag, classe, el))
-            except:
-                pass
-
-        # Palavras que fortemente indicam pesquisa
-        forca = [
-            "pesquis", "respond", "particip", "disponivel", "disponível",
-            "iniciar", "começar", "comecar", "survey", "abrir",
-            "acessar", "nova pesquisa", "ir para", "painel",
-            "opinar", "dar opiniao", "dar opinião",
-            "agora", "comece", "vamos", "iniciar"
-        ]
-
-        log.info(f"Analisando {len(candidatos)} candidatos...")
-
-        # Debug: loga todos os elementos com "respond" ou "agora" no texto
-        for txt, href, onclick, tag, classe, el in candidatos:
-            if "respond" in txt or "agora" in txt:
-                html = el.get_attribute("outerHTML")[:200]
-                log.info(f"[DEBUG-RESPONDA] tag={tag} txt='{txt[:50]}' class='{classe[:40]}' html='{html}'")
-
-        for txt, href, onclick, tag, classe, el in candidatos:
-            if any(p in txt for p in forca):
-                log.info(f"[FORCA] '{txt[:50]}' ({tag} | class={classe[:40]})")
-                try:
-                    self.driver.execute_script("arguments[0].scrollIntoView(true); arguments[0].click();", el)
-                    self._rand(3, 5)
-                    if self._em_pagina_pesquisa():
-                        return True
-                except:
-                    pass
-
-        # Tenta clicar em QUALQUER link externo
-        for txt, href, onclick, tag, classe, el in candidatos:
-            if href and "falai.com.vc" not in href and href.startswith("http"):
-                log.info(f"[EXTERNO] '{txt[:30]}' -> {href[:60]}")
-                try:
-                    self.driver.execute_script("arguments[0].scrollIntoView(true); arguments[0].click();", el)
-                    self._rand(3, 5)
-                    if self._em_pagina_pesquisa():
-                        return True
-                except:
-                    pass
-
-        # Tenta clicar em elementos que parecem cards/sessoes (pai de texto com palavras-chave)
-        for txt, href, onclick, tag, classe, el in candidatos:
-            if any(p in txt for p in ["nova", "nova pesquisa", "dispon", "voce tem", "participar",
-                                       "ganhe", "dinheiro", "pontos", "recompensa", "pontuação",
-                                       "pontuacao", "avaliar", "avaliação", "avaliacao", "votar"]):
-                log.info(f"[CARD] '{txt[:50]}'")
-                try:
-                    self.driver.execute_script("arguments[0].scrollIntoView(true); arguments[0].click();", el)
-                    self._rand(3, 5)
-                    if self._em_pagina_pesquisa():
-                        return True
-                except:
-                    pass
-
-        # Se nao achou nada, tenta clicar no primeiro link de cada card/div grande
-        cards = self.driver.find_elements(By.XPATH, "//div[contains(@class,'card') or contains(@class,'panel') or contains(@class,'box') or contains(@class,'item') or contains(@class,'row')]//a | //div[contains(@class,'card') or contains(@class,'panel') or contains(@class,'box') or contains(@class,'item') or contains(@class,'row')]//button")
-        for card in cards:
-            try:
-                if card.is_displayed():
-                    txt = card.text.strip().lower()
-                    if len(txt) > 2:
-                        log.info(f"[CARD] {txt[:40]}")
-                        self.driver.execute_script("arguments[0].scrollIntoView(true); arguments[0].click();", card)
-                        self._rand(3, 5)
-                        if self._em_pagina_pesquisa():
-                            return True
-            except:
-                pass
-
-        log.info("Nenhum link de pesquisa encontrado")
-        return False
-
-    def _em_pagina_pesquisa(self):
-        """Verifica se a pagina atual parece ser uma pesquisa"""
-        url = self.driver.current_url.lower()
-        if any(p in url for p in ["falai.com.vc", "painel", "dashboard"]):
-            return False
-        try:
-            page = self.driver.page_source.lower()
-            if any(p in page for p in ["radio", "checkbox", "select", "option", "input",
-                                        "pergunta", "questão", "questao", "marque", "escolha",
-                                        "selecione", "próximo", "proximo", "enviar"]):
-                return True
-        except:
-            pass
-        return len(url) > 10 and "falai.com.vc" not in url
-
-    def _responder_iframes(self):
-        """Tenta responder perguntas dentro de iframes"""
-        for i, iframe in enumerate(self.driver.find_elements(By.TAG_NAME, "iframe")):
-            try:
-                self.driver.switch_to.frame(iframe)
-                src = iframe.get_attribute("src") or ""
-                log.info(f"Verificando iframe {i}: {src[:80]}")
-                res = self._responder_pagina()
-                if res != "NO_INTERACTION":
-                    log.info(f"Iframe {i} respondeu: {res}")
-                    self.driver.switch_to.default_content()
-                    return res
-            except:
-                pass
-            finally:
-                self.driver.switch_to.default_content()
-        return "NO_INTERACTION"
+    # ==================== LOOP PRINCIPAL ====================
 
     def rodar(self):
-        log.info(f"Iniciando bot: {self.email}")
+        log.info("=" * 60)
+        log.info("FALAI BOT - Iniciando")
+        log.info(f"Email: {self.email}")
+        log.info(f"Headless: {self.headless}")
+        log.info("=" * 60)
 
         try:
             self._logar()
         except Exception as e:
-            log.error(f"Login falhou: {e}")
+            log.error(f"LOGIN FALHOU: {e}")
+            self._debug("erro_login")
             self.driver.quit()
             return
 
-        log.info("Loop de pesquisas...")
-        max_sem = 0
+        log.info("=" * 60)
+        log.info("INICIANDO LOOP DE PESQUISAS")
+        log.info("=" * 60)
+
+        ciclos_sem_pesquisa = 0
         em_pesquisa = False
+        url_anterior = ""
 
         while True:
             try:
-                url = self.driver.current_url.lower()
-                pagina_falai = any(p in url for p in ["falai.com.vc", "painel", "dashboard", "home"])
-                pagina_externa = not pagina_falai and url.startswith("http")
+                url_atual = self.driver.current_url.lower()
+                if url_atual != url_anterior:
+                    log.info(f"URL mudou: {url_atual[:100]}")
+                    url_anterior = url_atual
+                    self._debug("url_change")
 
-                # Se estiver em pagina externa, esta respondendo pesquisa
-                if pagina_externa:
-                    em_pesquisa = True
-                    max_sem = 0
+                # Detectar se esta em pagina de pesquisa
+                nesta_pesquisa = self._em_pesquisa()
 
-                if pagina_falai and not em_pesquisa:
+                if not nesta_pesquisa and not em_pesquisa:
+                    # Esta no Falai, procurar pesquisa
                     if self._navegar_pesquisas():
-                        max_sem = 0
+                        ciclos_sem_pesquisa = 0
+                        em_pesquisa = True
                         self._rand(3, 5)
                         continue
                     else:
-                        max_sem += 1
-                        log.info(f"Sem pesquisa ({max_sem})")
-                        if max_sem >= 3:
-                            log.info("Recarregando...")
+                        ciclos_sem_pesquisa += 1
+                        log.info(f"Sem pesquisa disponivel (ciclo {ciclos_sem_pesquisa})")
+
+                        if ciclos_sem_pesquisa >= 5:
+                            log.info("Recarregando pagina...")
                             self.driver.get(self.URL)
-                            self._rand(3, 5)
-                            # Relogin se necessario
-                            if "login" in self.driver.current_url.lower() or "entrar" in self.driver.page_source.lower():
-                                try:
-                                    self._logar()
-                                except:
-                                    pass
-                            max_sem = 0
-                        self._rand(5, 10)
+                            self._rand(4, 6)
+                            try:
+                                self._logar()
+                            except:
+                                pass
+                            ciclos_sem_pesquisa = 0
+
+                        self._rand(8, 15)
                         continue
 
-                if pagina_externa or em_pesquisa:
-                    res = self._responder_pagina()
+                if nesta_pesquisa:
+                    em_pesquisa = True
+                    ciclos_sem_pesquisa = 0
 
-                    if res == "COMPLETE":
-                        self.stats["respondidas"] += 1
-                        log.info(f"Concluida! Total: {self.stats['respondidas']}")
-                        em_pesquisa = False
-                        self._rand(2, 4)
-                        self.driver.get(self.URL)
+                # Responder pesquisa
+                resultado = self._responder_pagina()
+
+                if resultado == "COMPLETE":
+                    self.stats["respondidas"] += 1
+                    em_pesquisa = False
+                    log.info(f"PESQUISA CONCLUIDA! Total: {self.stats['respondidas']}")
+                    self._debug("concluida")
+                    self._rand(3, 5)
+                    # Voltar ao Falai
+                    self.driver.get(self.URL)
+                    self._rand(3, 4)
+                    continue
+
+                if not self._avancar():
+                    log.info("Sem botoes de acao")
+                    if nesta_pesquisa:
+                        # Tenta scroll e refresh
+                        self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
                         self._rand(2, 3)
-                        continue
-
-                    if res == "NO_INTERACTION":
-                        res = self._responder_iframes()
-
-                    if not self._avancar():
-                        # Se nao achou nada, verifica se voltou pro Falai
-                        if any(p in self.driver.current_url.lower() for p in ["falai.com.vc", "obrigado", "finalizado"]):
-                            log.info("Voltou ao Falai - pesquisa concluida")
-                            em_pesquisa = False
-                            self.stats["respondidas"] += 1
-                            self._rand(2, 4)
-                            self.driver.get(self.URL)
-                        else:
-                            log.info("Aguardando...")
-                            self._rand(3, 6)
+                        if not self._avancar():
+                            log.info("Ainda sem acao, verificando se acabou...")
+                            if any(p in self.driver.page_source.lower() for p in ["obrigado", "concluída", "finalizada"]):
+                                self.stats["respondidas"] += 1
+                                em_pesquisa = False
+                                log.info(f"Detectado fim! Total: {self.stats['respondidas']}")
+                                self.driver.get(self.URL)
+                                self._rand(3, 4)
+                                continue
+                            self._rand(3, 5)
                             self.driver.refresh()
                             self._rand(3, 5)
+                    else:
+                        self._rand(5, 10)
 
             except KeyboardInterrupt:
-                log.info("Parando...")
+                log.info("Parando pelo usuario...")
                 break
             except Exception as e:
                 self.stats["erros"] += 1
-                log.error(f"Erro: {e}")
-                self._rand(3, 6)
+                log.error(f"ERRO: {type(e).__name__}: {e}")
+                self._debug("erro_loop")
+                self._rand(4, 8)
                 try:
                     self.driver.refresh()
                 except:
-                    log.error("Driver morreu")
+                    log.error("Driver perdeu conexao")
                     break
 
-        t = datetime.now() - self.stats["inicio"]
-        log.info(f"=== FIM ===")
-        log.info(f"Respondidas: {self.stats['respondidas']}")
+        # Fim
+        tempo = datetime.now() - self.stats["inicio"]
+        log.info("=" * 60)
+        log.info("BOT FINALIZADO")
+        log.info(f"Pesquisas respondidas: {self.stats['respondidas']}")
         log.info(f"Erros: {self.stats['erros']}")
-        log.info(f"Tempo: {t}")
+        log.info(f"Tempo total: {tempo}")
+        log.info("=" * 60)
         self.driver.quit()
 
 
@@ -524,6 +709,7 @@ if __name__ == "__main__":
         senha = getpass.getpass("Senha do Falai: ")
 
     headless = "--headless" in sys.argv or "-h" in sys.argv
+    debug = "--debug" in sys.argv
 
-    bot = FalaiBot(email, senha, headless=headless)
+    bot = FalaiBot(email, senha, headless=headless, debug_dir="debug" if debug else "_debug")
     bot.rodar()
