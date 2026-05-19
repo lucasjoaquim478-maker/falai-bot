@@ -295,40 +295,55 @@ class FalaiBot:
 
     def _achar_botao_pesquisa(self, elementos):
         """Procura o botao de pesquisa usando multiplas estrategias"""
-        texto_baixo = [(e, e["texto"].lower()) for e in elementos]
+        import re
 
-        # PRIORIDADE 1: Codigos de pesquisa alfanumericos (exato: GZRK975, UHPQ8UX)
-        for el, txt in texto_baixo:
-            import re
-            cods = re.findall(r'[A-Z0-9]{6,8}', txt)
-            if cods:
-                log.info(f"[PRIORIDADE-1] Codigo de pesquisa '{cods[0]}' em '{el['texto'][:40]}'")
+        # Ignorar elementos de navegacao/naturais
+        ignorar = {"pesquisas disponíveis", "pesquisas disponiveis", "extrato",
+                    "informações cadastrais", "informacoes cadastrais",
+                    "indique um amigo", "portal de recompensas", "blog", "sair",
+                    "home", "sobre", "cadastre-se", "minha conta", "entrar",
+                    "clique aqui"}
+
+        # PRIORIDADE 1: Codigos de pesquisa (GZRK975, UHPQ8UX) - texto ORIGINAL
+        for el in elementos:
+            txt_orig = el["texto"]
+            cods = re.findall(r'[A-Z0-9]{6,8}', txt_orig)
+            if cods and txt_orig.lower() not in ignorar:
+                log.info(f"[PRIORIDADE-1] Codigo '{cods[0]}' em '{txt_orig[:40]}'")
                 return el
 
-        # PRIORIDADE 2: Botoes com "responder agora" ou "responda agora"
-        for el, txt in texto_baixo:
-            if "responder agora" in txt or "responda agora" in txt:
+        # PRIORIDADE 2: "responder agora" ou "responda agora"
+        for el in elementos:
+            txt = el["texto"].lower()
+            if ("responder agora" in txt or "responda agora" in txt) and txt not in ignorar:
                 log.info(f"[PRIORIDADE-2] '{el['texto'][:40]}'")
                 return el
 
-        # PRIORIDADE 3: Links externos (plataforma de pesquisa)
-        for el, txt in texto_baixo:
-            if el["href"] and "falai.com.vc" not in el["href"] and el["href"].startswith("http"):
-                log.info(f"[PRIORIDADE-3] link externo '{el['texto'][:30]}'")
-                return el
+        # PRIORIDADE 3: Palavras-chave de pesquisa (texto original)
+        for el in elementos:
+            txt = el["texto"].lower()
+            if any(kw in txt for kw in ["respond", "pesquis", "particip",
+                                          "disponiv", "inici", "agora",
+                                          "survey", "comec", "avali"]):
+                if txt not in ignorar and len(txt) > 3:
+                    log.info(f"[PRIORIDADE-3] '{el['texto'][:40]}'")
+                    return el
 
-        # PRIORIDADE 4: Palavras-chave de pesquisa
-        for el, txt in texto_baixo:
-            if ("respond" in txt or "pesquis" in txt or "particip" in txt
-                or "disponiv" in txt or "inici" in txt or "agora" in txt
-                or "survey" in txt):
-                log.info(f"[PRIORIDADE-4] '{el['texto'][:40]}'")
-                return el
+        # PRIORIDADE 4: Links externos (exceto blog, redes sociais)
+        for el in elementos:
+            txt = el["texto"].lower()
+            href = el["href"]
+            if href and "falai.com.vc" not in href and href.startswith("http"):
+                if "blog" not in txt and "facebook" not in href and "instagram" not in href and "tiktok" not in href:
+                    log.info(f"[PRIORIDADE-4] externo '{el['texto'][:30]}'")
+                    return el
 
-        # PRIORIDADE 5: Texto colapsado com codigo (GZRK975 etc em sub-elemento)
-        for el, txt in texto_baixo:
-            if any(c.isdigit() for c in txt[-6:] if c.isalnum()):
-                log.info(f"[PRIORIDADE-5] Possivel pesquisa colapsada '{el['texto'][:30]}'")
+        # PRIORIDADE 5: Elementos com digitos + letras (codigos parciais)
+        for el in elementos:
+            txt_orig = el["texto"]
+            cods = re.findall(r'[A-Z0-9]{4,}', txt_orig)
+            if cods and txt_orig.lower() not in ignorar:
+                log.info(f"[PRIORIDADE-5] Codigo parcial '{txt_orig[:30]}'")
                 return el
 
         return None
