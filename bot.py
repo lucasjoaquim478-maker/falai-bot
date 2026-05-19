@@ -726,14 +726,8 @@ class FalaiBot:
 
 
 if __name__ == "__main__":
-    email = os.environ.get("FALAI_EMAIL", "")
-    senha = os.environ.get("FALAI_SENHA", "")
-
-    if not email:
-        email = input("Email do Falai: ").strip()
-    if not senha:
-        import getpass
-        senha = getpass.getpass("Senha do Falai: ")
+    email = os.environ.get("FALAI_EMAIL", "lucasjoaquim478@gmail.com")
+    senha = os.environ.get("FALAI_SENHA", "Lucas12@")
 
     headless = "--visible" not in sys.argv and "-v" not in sys.argv
     debug = "--debug" in sys.argv
