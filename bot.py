@@ -297,55 +297,38 @@ class FalaiBot:
         """Procura o botao de pesquisa usando multiplas estrategias"""
         texto_baixo = [(e, e["texto"].lower()) for e in elementos]
 
-        # Estrategia 1: Palavras exatas no texto
-        keywords = [
-            "responder agora", "responda agora", "responder", "responda",
-            "participar", "pesquisa disponivel", "pesquisa disponível",
-            "nova pesquisa", "iniciar pesquisa", "começar",
-            "acessar pesquisa", "ir para pesquisa", "responder pesquisa",
-            "painel", "disponivel", "disponível", "iniciar", "abrir",
-            "responda hoje", "responder hoje"
-        ]
+        # PRIORIDADE 1: Codigos de pesquisa alfanumericos (exato: GZRK975, UHPQ8UX)
         for el, txt in texto_baixo:
-            for kw in keywords:
-                if kw in txt:
-                    log.info(f"[ESTRATEGIA-1] '{el['texto'][:40]}' (keyword: '{kw}')")
-                    return el
-
-        # Estrategia 2: Palavras parciais
-        for el, txt in texto_baixo:
-            if ("respond" in txt or "pesquis" in txt or "particip" in txt
-                or "dispon" in txt or "inici" in txt or "agora" in txt
-                or "survey" in txt or "comec" in txt or "avali" in txt):
-                log.info(f"[ESTRATEGIA-2] '{el['texto'][:40]}'")
+            import re
+            cods = re.findall(r'[A-Z0-9]{6,8}', txt)
+            if cods:
+                log.info(f"[PRIORIDADE-1] Codigo de pesquisa '{cods[0]}' em '{el['texto'][:40]}'")
                 return el
 
-        # Estrategia 3: Links externos
+        # PRIORIDADE 2: Botoes com "responder agora" ou "responda agora"
+        for el, txt in texto_baixo:
+            if "responder agora" in txt or "responda agora" in txt:
+                log.info(f"[PRIORIDADE-2] '{el['texto'][:40]}'")
+                return el
+
+        # PRIORIDADE 3: Links externos (plataforma de pesquisa)
         for el, txt in texto_baixo:
             if el["href"] and "falai.com.vc" not in el["href"] and el["href"].startswith("http"):
-                log.info(f"[ESTRATEGIA-3] link externo '{el['texto'][:30]}' -> {el['href'][:50]}")
+                log.info(f"[PRIORIDADE-3] link externo '{el['texto'][:30]}'")
                 return el
 
-        # Estrategia 4: Elementos grandes (cards)
-        for el in elementos:
-            if el["rect_w"] > 100 and el["rect_h"] > 30 and el["texto"]:
-                log.info(f"[ESTRATEGIA-4] card {el['rect_w']}x{el['rect_h']} '{el['texto'][:30]}'")
-                return el
-
-        # Estrategia 5: Qualquer elemento com texto relevante
+        # PRIORIDADE 4: Palavras-chave de pesquisa
         for el, txt in texto_baixo:
-            palavras_relevantes = ["pesquisa", "pesquisas", "pesquisar", "responder",
-                                    "responda", "resposta", "pergunta", "questionário",
-                                    "questionario", "enquete", "votar", "voto",
-                                    "opiniao", "opinião", "avaliar", "avaliação",
-                                    "avaliacao", "pontos", "recompensa", "ganhar",
-                                    "dinheiro", "extra", "saldo", "carteira",
-                                    "minhas pesquisas", "pesquisas disponíveis",
-                                    "pesquisas disponiveis", "novas pesquisas",
-                                    "em aberto", "pendente", "para responder",
-                                    "clique aqui", "acessar", "entrar"]
-            if any(p in txt for p in palavras_relevantes):
-                log.info(f"[ESTRATEGIA-5] '{el['texto'][:40]}'")
+            if ("respond" in txt or "pesquis" in txt or "particip" in txt
+                or "disponiv" in txt or "inici" in txt or "agora" in txt
+                or "survey" in txt):
+                log.info(f"[PRIORIDADE-4] '{el['texto'][:40]}'")
+                return el
+
+        # PRIORIDADE 5: Texto colapsado com codigo (GZRK975 etc em sub-elemento)
+        for el, txt in texto_baixo:
+            if any(c.isdigit() for c in txt[-6:] if c.isalnum()):
+                log.info(f"[PRIORIDADE-5] Possivel pesquisa colapsada '{el['texto'][:30]}'")
                 return el
 
         return None
@@ -373,45 +356,75 @@ class FalaiBot:
         alvo = self._achar_botao_pesquisa(elementos)
 
         if alvo:
-            log.info(f"Alvo encontrado! Texto: '{alvo['texto']}' Tag: <{alvo['tag']}>")
-            # Encontrar o elemento DOM real
-            xpath = f"//{alvo['tag']}"
-            if alvo["id"]:
-                xpath = f"//*[@id='{alvo['id']}']"
-            elif alvo["texto"]:
-                # Escapa aspas simples
-                texto_seguro = alvo["texto"].replace("'", "\\'")
-                xpath = f"//{alvo['tag']}[contains(text(), '{texto_seguro[:50]}')]"
+            log.info(f"Alvo: '{alvo['texto'][:50]}' tag=<{alvo['tag']}> class={alvo['classe'][:30]}")
 
+            # Usa JavaScript pra clicar (evita problemas de XPath com acentos)
+            js_click = f"""
+            (function() {{
+                var el = document.querySelector('{alvo['tag']}[class*="{alvo['classe'][:20]}"]');
+                if (!el) {{
+                    var todos = document.querySelectorAll('{alvo['tag']}');
+                    for (var i = 0; i < todos.length; i++) {{
+                        if (todos[i].textContent.trim().includes('{alvo['texto'][:30].replace("'", "\\'")}')) {{
+                            el = todos[i];
+                            break;
+                        }}
+                    }}
+                }}
+                if (el) {{
+                    el.scrollIntoView({{behavior:'instant',block:'center'}});
+                    setTimeout(function() {{ el.click(); }}, 300);
+                    return true;
+                }}
+                return false;
+            }})();
+            """
             try:
-                el = self.driver.find_element(By.XPATH, xpath)
-                if self._clicar(el):
-                    log.info("Clique realizado!")
+                clicou = self.driver.execute_script(js_click)
+                if clicou:
+                    log.info("Clique via JS!")
                     self._debug("pos_clique")
                     self._rand(3, 5)
-                    # Verificar se entrou na pesquisa
+
+                    # Se clicou em codigo de pesquisa, esperar botao RESPONDER AGORA aparecer
                     if self._em_pesquisa():
                         return True
-                    # Talvez tenha aberto nova janela/aba
+
+                    # Pode ter aberto nova aba
                     if len(self.driver.window_handles) > 1:
                         self.driver.switch_to.window(self.driver.window_handles[-1])
-                        log.info(f"Mudou para nova aba: {self.driver.current_url[:80]}")
+                        log.info(f"Nova aba: {self.driver.current_url[:80]}")
                         if self._em_pesquisa():
                             return True
-            except Exception as e:
-                log.warning(f"Erro ao clicar no alvo: {e}")
 
-            # Fallback: tenta pelo JS
-            try:
-                self.driver.execute_script(f"""
-                    var el = document.querySelector('{alvo["tag"]}[class*="{alvo["classe"][:20]}"]');
-                    if (el) el.click();
-                """)
-                self._rand(3, 5)
-                if self._em_pesquisa():
-                    return True
-            except:
-                pass
+                    # Esperar e tentar achar RESPONDER AGORA (se estiver colapsado)
+                    self._rand(2, 3)
+                    page = self.driver.page_source.lower()
+                    if "responder agora" in page:
+                        log.info("Botao RESPONDER AGORA apareceu apos clique!")
+                        # Clica no botao RESPONDER AGORA recem aparecido
+                        js_btn = """
+                        (function() {
+                            var els = document.querySelectorAll('a, button, span, div');
+                            for (var i = 0; i < els.length; i++) {
+                                var t = (els[i].textContent || '').trim().toLowerCase();
+                                if (t.includes('responder agora') || t.includes('responda agora')) {
+                                    els[i].scrollIntoView({behavior:'instant',block:'center'});
+                                    setTimeout(function() { els[i].click(); }, 300);
+                                    return true;
+                                }
+                            }
+                            return false;
+                        })();
+                        """
+                        if self.driver.execute_script(js_btn):
+                            log.info("RESPONDER AGORA clicado!")
+                            self._rand(3, 5)
+                            if self._em_pesquisa():
+                                return True
+
+            except Exception as e:
+                log.warning(f"Erro no clique JS: {e}")
 
         log.info("Nenhum botao de pesquisa encontrado")
         return False
