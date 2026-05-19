@@ -1,6 +1,7 @@
 @echo off
 title Falai Bot
 color 0A
+setlocal enabledelayedexpansion
 
 echo ========================================
 echo         FALAI BOT - Auto Responder
@@ -45,9 +46,12 @@ echo [*] Iniciando bot...
 echo [*] Pressione CTRL+C para parar
 echo.
 
-set /p email=<config.txt
-set /p senha=<config.txt
-set /p senha=<config.txt
+set /a line=0
+for /f "usebackq delims=" %%a in ("config.txt") do (
+    if !line! equ 0 set "email=%%a"
+    if !line! equ 1 set "senha=%%a"
+    set /a line+=1
+)
 
 set FALAI_EMAIL=%email%
 set FALAI_SENHA=%senha%
