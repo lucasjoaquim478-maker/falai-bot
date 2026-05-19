@@ -316,10 +316,18 @@ class FalaiBot:
             "pesquis", "respond", "particip", "disponivel", "disponível",
             "iniciar", "começar", "comecar", "survey", "abrir",
             "acessar", "nova pesquisa", "ir para", "painel",
-            "opinar", "dar opiniao", "dar opinião"
+            "opinar", "dar opiniao", "dar opinião",
+            "agora", "comece", "vamos", "iniciar"
         ]
 
         log.info(f"Analisando {len(candidatos)} candidatos...")
+
+        # Debug: loga todos os elementos com "respond" ou "agora" no texto
+        for txt, href, onclick, tag, classe, el in candidatos:
+            if "respond" in txt or "agora" in txt:
+                html = el.get_attribute("outerHTML")[:200]
+                log.info(f"[DEBUG-RESPONDA] tag={tag} txt='{txt[:50]}' class='{classe[:40]}' html='{html}'")
+
         for txt, href, onclick, tag, classe, el in candidatos:
             if any(p in txt for p in forca):
                 log.info(f"[FORCA] '{txt[:50]}' ({tag} | class={classe[:40]})")
