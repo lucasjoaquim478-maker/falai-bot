@@ -228,37 +228,59 @@ class FalaiBot:
     def _listar_elementos(self):
         """Lista todos elementos clicaveis da pagina"""
         js = """
-        return Array.from(document.querySelectorAll(
-            'a, button, input[type="submit"], input[type="button"], ' +
-            '[role="button"], [onclick], [class*="btn"], [class*="card"], ' +
-            '[class*="link"], [class*="click"], li, td, span, div, h1, h2, h3, h4, h5, p'
-        )).filter(el => {
+        function getText(el) {
+            return (el.textContent || '').trim().slice(0, 100);
+        }
+
+        var todos = document.querySelectorAll('a, button, input, [role="button"], [onclick], li, td, span, div, h1, h2, h3, h4, h5, p, label');
+        var resultado = [];
+        for (var i = 0; i < todos.length; i++) {
+            var el = todos[i];
             try {
-                const rect = el.getBoundingClientRect();
-                const style = window.getComputedStyle(el);
-                return rect.width > 0 && rect.height > 0 &&
-                       style.display !== 'none' &&
-                       style.visibility !== 'hidden' &&
-                       style.opacity !== '0';
-            } catch(e) { return false; }
-        }).map(el => ({
-            tag: el.tagName.toLowerCase(),
-            texto: (el.textContent || '').trim().slice(0, 100),
-            href: el.getAttribute('href') || '',
-            onclick: (el.getAttribute('onclick') || '').slice(0, 50),
-            classe: (el.getAttribute('class') || '').slice(0, 60),
-            id: el.getAttribute('id') || '',
-            type: el.getAttribute('type') || '',
-            role: el.getAttribute('role') || '',
-            data: el.getAttribute('data-target') || '',
-            rect_w: Math.round(rect.width),
-            rect_h: Math.round(rect.height)
-        }));
+                var style = window.getComputedStyle(el);
+                if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
+                var texto = getText(el);
+                if (!texto && !el.getAttribute('href') && !el.getAttribute('onclick')) continue;
+                resultado.push({
+                    tag: el.tagName.toLowerCase(),
+                    texto: texto,
+                    href: el.getAttribute('href') || '',
+                    onclick: (el.getAttribute('onclick') || '').slice(0, 50),
+                    classe: (el.getAttribute('class') || '').slice(0, 60),
+                    id: el.getAttribute('id') || '',
+                    type: el.getAttribute('type') || '',
+                    role: el.getAttribute('role') || ''
+                });
+            } catch(e) {}
+        }
+        return resultado;
         """
         try:
             return self.driver.execute_script(js)
-        except:
-            return []
+        except Exception as e:
+            log.warning(f"Erro listar elementos via JS: {e}")
+            # Fallback: selenium puro
+            els = []
+            for tag in ["a", "button", "span", "div", "li", "label"]:
+                for el in self.driver.find_elements(By.TAG_NAME, tag):
+                    try:
+                        if el.is_displayed():
+                            txt = el.text.strip()
+                            href = el.get_attribute("href") or ""
+                            if txt or href:
+                                els.append({
+                                    "tag": tag,
+                                    "texto": txt[:100],
+                                    "href": href[:100],
+                                    "onclick": "",
+                                    "classe": (el.get_attribute("class") or "")[:60],
+                                    "id": el.get_attribute("id") or "",
+                                    "type": el.get_attribute("type") or "",
+                                    "role": el.get_attribute("role") or ""
+                                })
+                    except:
+                        pass
+            return els
 
     def _logar_elementos(self, elementos):
         """Loga todos elementos encontrados"""
@@ -277,11 +299,12 @@ class FalaiBot:
 
         # Estrategia 1: Palavras exatas no texto
         keywords = [
-            "responda agora", "responder", "responda", "participar",
-            "pesquisa disponivel", "pesquisa disponível", "nova pesquisa",
-            "iniciar pesquisa", "começar", "acessar pesquisa",
-            "ir para pesquisa", "responder pesquisa", "painel",
-            "disponivel", "disponível", "iniciar", "abrir"
+            "responder agora", "responda agora", "responder", "responda",
+            "participar", "pesquisa disponivel", "pesquisa disponível",
+            "nova pesquisa", "iniciar pesquisa", "começar",
+            "acessar pesquisa", "ir para pesquisa", "responder pesquisa",
+            "painel", "disponivel", "disponível", "iniciar", "abrir",
+            "responda hoje", "responder hoje"
         ]
         for el, txt in texto_baixo:
             for kw in keywords:
