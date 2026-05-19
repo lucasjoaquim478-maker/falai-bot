@@ -229,7 +229,9 @@ class FalaiBot:
         """Lista todos elementos clicaveis da pagina"""
         js = """
         function getText(el) {
-            return (el.textContent || '').trim().slice(0, 100);
+            var t = el.textContent || el.value || '';
+            if (!t.trim() && el.type === 'submit') t = el.value || '';
+            return t.trim().slice(0, 100);
         }
 
         var todos = document.querySelectorAll('a, button, input, [role="button"], [onclick], li, td, span, div, h1, h2, h3, h4, h5, p, label');
@@ -371,85 +373,28 @@ class FalaiBot:
         alvo = self._achar_botao_pesquisa(elementos)
 
         if alvo:
-            log.info(f"Alvo: '{alvo['texto'][:50]}' tag=<{alvo['tag']}> class={alvo['classe'][:30]}")
+            log.info(f"Alvo: '{alvo['texto'][:50]}' tag=<{alvo['tag']}>")
 
-            # Sanitizar texto para usar no JS (remover newlines, escapar aspas)
-            import json
-            texto_js = json.dumps(alvo["texto"].strip()[:40])
-            classe_js = json.dumps(alvo["classe"][:20])
-            tag_js = json.dumps(alvo["tag"])
-
-            # Usa JavaScript pra clicar (evita problemas de XPath com acentos)
-            js_click = f"""
-            (function() {{
-                var tag = {tag_js};
-                var texto = {texto_js};
-                var classe = {classe_js};
-                var el = null;
-                if (classe) {{
-                    try {{ el = document.querySelector(tag + '[class*="' + classe + '"]'); }} catch(e) {{}}
-                }}
-                if (!el) {{
-                    var todos = document.querySelectorAll(tag);
-                    for (var i = 0; i < todos.length; i++) {{
-                        if (todos[i].textContent.trim().includes(texto)) {{
-                            el = todos[i];
-                            break;
-                        }}
-                    }}
-                }}
-                if (el) {{
-                    el.scrollIntoView({{behavior:'instant',block:'center'}});
-                    setTimeout(function() {{ el.click(); }}, 300);
-                    return true;
-                }}
-                return false;
-            }})();
-            """
+            # Extrair URL do ConviteID e navegar direto pra pesquisa
             try:
-                clicou = self.driver.execute_script(js_click)
-                if clicou:
-                    log.info("Clique via JS!")
-                    self._debug("pos_clique")
-                    self._rand(3, 5)
-
+                link_el = WebDriverWait(self.driver, 10).until(
+                    EC.presence_of_element_located((By.XPATH, "//a[contains(@href, 'ConviteID')]"))
+                )
+                url = link_el.get_attribute("href")
+                if url:
+                    log.info(f"ConviteID: {url[:100]}")
+                    self.driver.get(url)
+                    self._rand(4, 6)
                     if self._em_pesquisa():
                         return True
-
                     if len(self.driver.window_handles) > 1:
                         self.driver.switch_to.window(self.driver.window_handles[-1])
-                        log.info(f"Nova aba: {self.driver.current_url[:80]}")
                         if self._em_pesquisa():
                             return True
-
-                    # Esperar e tentar achar RESPONDER AGORA (se estiver colapsado)
-                    self._rand(3, 4)
-                    js_btn = """
-                    (function() {
-                        var els = document.querySelectorAll('a, button, span, div');
-                        for (var i = 0; i < els.length; i++) {
-                            try {
-                                var t = (els[i].textContent || '').trim().toLowerCase();
-                                if (t.indexOf('responder agora') >= 0 || t.indexOf('responda agora') >= 0) {
-                                    els[i].scrollIntoView({behavior:'instant',block:'center'});
-                                    setTimeout(function() { els[i].click(); }, 300);
-                                    return true;
-                                }
-                            } catch(e) {}
-                        }
-                        return false;
-                    })();
-                    """
-                    if self.driver.execute_script(js_btn):
-                        log.info("RESPONDER AGORA clicado!")
-                        self._rand(3, 5)
-                        if self._em_pesquisa():
-                            return True
-
+            except TimeoutException:
+                log.info("ConviteID nao encontrado")
             except Exception as e:
-                log.warning(f"Erro no clique JS: {e}")
-
-        log.info("Nenhum botao de pesquisa encontrado")
+                log.warning(f"Erro ConviteID: {e}")
         return False
 
     def _em_pesquisa(self):
