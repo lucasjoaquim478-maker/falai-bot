@@ -373,14 +373,26 @@ class FalaiBot:
         if alvo:
             log.info(f"Alvo: '{alvo['texto'][:50]}' tag=<{alvo['tag']}> class={alvo['classe'][:30]}")
 
+            # Sanitizar texto para usar no JS (remover newlines, escapar aspas)
+            import json
+            texto_js = json.dumps(alvo["texto"].strip()[:40])
+            classe_js = json.dumps(alvo["classe"][:20])
+            tag_js = json.dumps(alvo["tag"])
+
             # Usa JavaScript pra clicar (evita problemas de XPath com acentos)
             js_click = f"""
             (function() {{
-                var el = document.querySelector('{alvo['tag']}[class*="{alvo['classe'][:20]}"]');
+                var tag = {tag_js};
+                var texto = {texto_js};
+                var classe = {classe_js};
+                var el = null;
+                if (classe) {{
+                    try {{ el = document.querySelector(tag + '[class*="' + classe + '"]'); }} catch(e) {{}}
+                }}
                 if (!el) {{
-                    var todos = document.querySelectorAll('{alvo['tag']}');
+                    var todos = document.querySelectorAll(tag);
                     for (var i = 0; i < todos.length; i++) {{
-                        if (todos[i].textContent.trim().includes('{alvo['texto'][:30].replace("'", "\\'")}')) {{
+                        if (todos[i].textContent.trim().includes(texto)) {{
                             el = todos[i];
                             break;
                         }}
@@ -401,11 +413,9 @@ class FalaiBot:
                     self._debug("pos_clique")
                     self._rand(3, 5)
 
-                    # Se clicou em codigo de pesquisa, esperar botao RESPONDER AGORA aparecer
                     if self._em_pesquisa():
                         return True
 
-                    # Pode ter aberto nova aba
                     if len(self.driver.window_handles) > 1:
                         self.driver.switch_to.window(self.driver.window_handles[-1])
                         log.info(f"Nova aba: {self.driver.current_url[:80]}")
@@ -413,30 +423,28 @@ class FalaiBot:
                             return True
 
                     # Esperar e tentar achar RESPONDER AGORA (se estiver colapsado)
-                    self._rand(2, 3)
-                    page = self.driver.page_source.lower()
-                    if "responder agora" in page:
-                        log.info("Botao RESPONDER AGORA apareceu apos clique!")
-                        # Clica no botao RESPONDER AGORA recem aparecido
-                        js_btn = """
-                        (function() {
-                            var els = document.querySelectorAll('a, button, span, div');
-                            for (var i = 0; i < els.length; i++) {
+                    self._rand(3, 4)
+                    js_btn = """
+                    (function() {
+                        var els = document.querySelectorAll('a, button, span, div');
+                        for (var i = 0; i < els.length; i++) {
+                            try {
                                 var t = (els[i].textContent || '').trim().toLowerCase();
-                                if (t.includes('responder agora') || t.includes('responda agora')) {
+                                if (t.indexOf('responder agora') >= 0 || t.indexOf('responda agora') >= 0) {
                                     els[i].scrollIntoView({behavior:'instant',block:'center'});
                                     setTimeout(function() { els[i].click(); }, 300);
                                     return true;
                                 }
-                            }
-                            return false;
-                        })();
-                        """
-                        if self.driver.execute_script(js_btn):
-                            log.info("RESPONDER AGORA clicado!")
-                            self._rand(3, 5)
-                            if self._em_pesquisa():
-                                return True
+                            } catch(e) {}
+                        }
+                        return false;
+                    })();
+                    """
+                    if self.driver.execute_script(js_btn):
+                        log.info("RESPONDER AGORA clicado!")
+                        self._rand(3, 5)
+                        if self._em_pesquisa():
+                            return True
 
             except Exception as e:
                 log.warning(f"Erro no clique JS: {e}")

@@ -17,6 +17,7 @@ set "API_URL=https://api.github.com/repos/%REPO%/releases/latest"
 :: Pasta temporaria
 set "TEMP_DIR=%TEMP%\falai-bot-update"
 if exist "%TEMP_DIR%" rmdir /s /q "%TEMP_DIR%" 2>nul
+mkdir "%TEMP_DIR%" 2>nul
 
 :: Verificar versao local
 set LOCAL_VER=0
