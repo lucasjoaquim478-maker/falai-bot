@@ -77,49 +77,64 @@ class FalaiBot:
         except:
             pass
 
-        try:
-            btn_conta = self.wait.until(
-                EC.element_to_be_clickable((By.XPATH, "//a[contains(text(),'minha conta')]"))
-            )
-            btn_conta.click()
-            log.info("Dropdown aberto")
-            self._rand(1, 2)
-        except Exception as e:
-            log.error(f"Falha ao abrir dropdown: {e}")
-            raise
+        log.info("Enviando login via AJAX...")
+        self._rand(1, 2)
 
-        try:
-            email_input = self.wait.until(
-                EC.presence_of_element_located((By.ID, "username"))
-            )
-            senha_input = self.driver.find_element(By.ID, "password")
-            email_input.clear()
-            email_input.send_keys(self.email)
-            self._rand()
-            senha_input.clear()
-            senha_input.send_keys(self.senha)
-            self._rand()
+        # Aguardar jQuery carregar
+        self.wait.until(lambda d: d.execute_script("return typeof jQuery !== 'undefined'"))
+        log.info("jQuery OK")
 
-            btn_entrar = self.driver.find_element(By.ID, "btnLogar")
-            btn_entrar.click()
-            log.info("Login enviado")
-            self._rand(3, 5)
-        except Exception as e:
-            log.error(f"Falha no preenchimento: {e}")
-            raise
+        login_js = """
+        const email = arguments[0];
+        const senha = arguments[1];
+        const done = arguments[2];
 
-        try:
-            erro = self.driver.find_element(By.CSS_SELECTOR, "#modalMsg .modal-body")
-            if erro.is_displayed():
-                msg = erro.text.strip()
-                log.error(f"Erro no login: {msg}")
-                raise Exception(f"Login falhou: {msg}")
-        except TimeoutException:
-            pass
-        except NoSuchElementException:
-            pass
+        // Preenche os campos primeiro
+        document.getElementById('username').value = email;
+        document.getElementById('password').value = senha;
 
-        log.info(f"Login OK - URL: {self.driver.current_url[:80]}")
+        // Faz a requisicao AJAX direta igual o site faz
+        $.post("back.php", {
+            email: email,
+            s: senha,
+            info: "logar",
+            pesquisaID: '',
+            statusID: '',
+            PainelistaID: '',
+            entrevistadoID: ''
+        }, function(data) {
+            if (data && data.dados && data.dados.redirect) {
+                window.location.href = data.dados.redirect;
+                done(true);
+            } else {
+                done(false);
+            }
+        }).fail(function() {
+            done(false);
+        });
+        """
+
+        sucesso = self.driver.execute_async_script(login_js, self.email, self.senha)
+        self._rand(3, 5)
+
+        if sucesso:
+            log.info("Login OK - redirect recebido")
+            self._rand(2, 3)
+        else:
+            # Verificar modal de erro
+            try:
+                erro = self.driver.find_element(By.CSS_SELECTOR, "#modalMsg .modal-body")
+                if erro.is_displayed():
+                    msg = erro.text.strip()
+                    log.error(f"Erro no login: {msg}")
+                    raise Exception(f"Login falhou: {msg}")
+            except TimeoutException:
+                pass
+            except NoSuchElementException:
+                pass
+            raise Exception("Login falhou - sem redirect")
+
+        log.info(f"URL apos login: {self.driver.current_url[:80]}")
         return True
 
     def _achar_botao(self, textos):
