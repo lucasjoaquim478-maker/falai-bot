@@ -41,6 +41,10 @@ class FalaiBot:
         self._init_driver()
 
     def _init_driver(self):
+        import subprocess
+        subprocess.run("taskkill /f /im chromedriver.exe 2>nul", shell=True, capture_output=True)
+        self._rand(1, 2)
+
         opt = Options()
         if self.headless:
             opt.add_argument("--headless=new")
@@ -50,6 +54,7 @@ class FalaiBot:
         opt.add_argument("--disable-dev-shm-usage")
         opt.add_argument("--disable-blink-features=AutomationControlled")
         opt.add_argument("--disable-extensions")
+        opt.add_argument("--remote-debugging-port=0")
         opt.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
         opt.add_experimental_option("useAutomationExtension", False)
         opt.add_experimental_option("prefs", {
@@ -104,7 +109,15 @@ class FalaiBot:
             log.warning("jQuery nao detectado, tentando mesmo assim")
 
         log.info("Enviando login via AJAX...")
+        self._debug("antes_login")
         self._rand(1, 2)
+
+        # Verificar URL atual
+        url_atual = self.driver.current_url
+        log.info(f"URL antes do login: {url_atual}")
+        if "portal" in url_atual:
+            log.info("Ja esta no portal, login desnecessario")
+            return True
 
         js = """
         const email = arguments[0];
@@ -127,10 +140,10 @@ class FalaiBot:
                         window.location.href = data.dados.redirect;
                         done(true);
                     } else {
-                        done(false);
+                        done(JSON.stringify(data || 'null').slice(0,200));
                     }
-                }).fail(function() {
-                    done(false);
+                }).fail(function(jq) {
+                    done('jq_fail:' + (jq.status || '') + ' ' + (jq.responseText || '').slice(0,100));
                 });
             } else {
                 // Fallback: fetch nativo
@@ -150,10 +163,10 @@ class FalaiBot:
                             window.location.href = data.dados.redirect;
                             done(true);
                         } else {
-                            done(false);
+                            done(JSON.stringify(data || 'null').slice(0,200));
                         }
                     })
-                    .catch(() => done(false));
+                    .catch(e => done('fetch_fail:' + (e.message || '').slice(0,100)));
             }
         }
 
@@ -166,14 +179,21 @@ class FalaiBot:
         tentarLogin();
         """
 
-        sucesso = self.driver.execute_async_script(js, self.email, self.senha)
-        self._rand(3, 5)
+        try:
+            sucesso = self.driver.execute_async_script(js, self.email, self.senha)
+            self._rand(3, 5)
+        except Exception as e:
+            self._debug("erro_login")
+            raise
 
-        if sucesso:
+        if sucesso is True:
             log.info(f"Login OK! URL: {self.driver.current_url[:80]}")
             self._debug("pos_login")
             self._rand(2, 3)
             return True
+
+        if sucesso and isinstance(sucesso, str):
+            log.warning(f"Resposta do servidor: {sucesso[:150]}")
 
         try:
             erro = self.driver.find_element(By.CSS_SELECTOR, "#modalMsg .modal-body")
@@ -712,7 +732,7 @@ if __name__ == "__main__":
         import getpass
         senha = getpass.getpass("Senha do Falai: ")
 
-    headless = "--headless" in sys.argv or "-h" in sys.argv
+    headless = "--visible" not in sys.argv and "-v" not in sys.argv
     debug = "--debug" in sys.argv
 
     bot = FalaiBot(email, senha, headless=headless, debug_dir="debug" if debug else "_debug")
