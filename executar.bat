@@ -36,9 +36,9 @@ if exist config.txt (
 set /p email="Email do Falai: "
 set /p senha="Senha do Falai: "
 
-:: Salvar config
-echo %email% > config.txt
-echo %senha% >> config.txt
+:: Salvar config (usando !var! pra nao quebrar caracteres especiais)
+>config.txt echo !email!
+>>config.txt echo !senha!
 echo [*] Config salva em config.txt
 
 :run
@@ -54,8 +54,8 @@ for /f "usebackq delims=" %%a in ("config.txt") do (
     set /a line+=1
 )
 
-set FALAI_EMAIL=%email%
-set FALAI_SENHA=%senha%
+set "FALAI_EMAIL=!email!"
+set "FALAI_SENHA=!senha!"
 python bot.py
 
 if %ERRORLEVEL% NEQ 0 (
